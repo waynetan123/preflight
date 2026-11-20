@@ -35,6 +35,8 @@ TABLE_Y = (-0.60, 0.40)
 PANDA_BASE = (0.0, 0.0, TABLE_TOP_Z)
 PANDA_HOME_QPOS = (0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04, 0.04)
 PANDA_HOME_CTRL = (0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255)
+# Franka's flange-to-TCP distance: the point between the fingertips, on the hand's z axis.
+PANDA_TCP_OFFSET = 0.1034
 
 HUMAN_PREFIX = "human_"
 PANDA_PREFIX = "panda/"
@@ -187,6 +189,8 @@ def _attach_panda(spec: mujoco.MjSpec) -> None:
     # away from its commanded pose.
     for body in panda.bodies:
         body.gravcomp = 1
+    # move_to and the speed criteria use this point.
+    panda.body("hand").add_site(name="tcp", pos=(0, 0, PANDA_TCP_OFFSET), size=(0.005, 0, 0), rgba=(1, 0, 0, 0.5))
     frame = spec.worldbody.add_frame(pos=PANDA_BASE)
     spec.attach(panda, prefix=PANDA_PREFIX, frame=frame)
 

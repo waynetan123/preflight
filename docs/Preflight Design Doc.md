@@ -422,7 +422,7 @@ preflight/
   core/        firewall.py  verdict.py  trace.py
   criteria/    schema.py (pydantic)  catalogue.py  exemptions.py  registry.py  loader.py
   backends/    mujoco_backend.py
-  robots/      tabletop_arm.py (primitives, IK, retiming)
+  robots/      tabletop_arm.py (primitives, IK, playback)  trajectory.py (speed profile, retiming)
   adapters/    anthropic.py  openai.py  mcp_server.py
   audit/       log.py  replay.py
   cli.py
@@ -453,6 +453,20 @@ Four decisions made on 9 November keep v0.1 focused on judging outcomes. The rob
 | Human model | MuJoCo's humanoid, `model/humanoid/humanoid.xml` in the MuJoCo repo (Apache-2.0) | Its head, torso, upper and lower arms, hands and legs are separate bodies that map onto per-region force limits, tagged `human` in the YAML. A static human has its free joint removed and stands fixed beside the table. A scripted moving hand is driven as a mocap body. |
 | Observation | Preflight writes its own `describe_scene` tool. The robot is assumed to have sensors that know the world as precisely as the simulation does. | Reads ground-truth sim state behind a `WorldStateProvider` interface, so a later connector for real robot sensors replaces the sim-backed provider without touching the firewall. Its output is attack surface, since indirect injection arrives in object labels. Open: whether it reveals hazard tags to the LLM. |
 | Motion timing | Turning a target into a timed trajectory is the robot's job, through `RobotAdapter.compile()`. | The simulated arm uses IK via mink, then a constant-acceleration (trapezoidal) speed profile: about 30 lines, no library. MODIFY retiming stretches the profile's duration. Timing matters because speed decides `slow_near_human`, impact force and drops. |
+| Requested speed | The robot limits speed, as a real controller does. `compile()` does not refuse a high speed. | The TCP speed is capped at 1.7 m/s, then the motion is slowed until each joint is below its speed limit. The trajectory records the requested speed and the planned peak speed. The rules judge the motion that the robot will really do. |
+
+### Compile in v0.1
+
+`TabletopArm.compile()` in `preflight/robots/tabletop_arm.py` changes a tool call into a `Trajectory`. The firewall checks this trajectory, and the executor runs the same object.
+
+- **TCP.** `move_to` moves the TCP site `panda/tcp` on a straight line. The TCP is the point between the fingertips, 0.1034 m below the hand. The gripper always points down.
+- **Samples.** IK runs every 0.02 s along the line. Each solution starts from the previous one. Playback interpolates linearly between samples.
+- **`pick(object)`.** The arm moves above the object and lowers the TCP to 5 mm above the object's top. It waits 0.3 s, switches on the weld, and lifts 0.10 m. The last part of the motion is at 0.1 m/s.
+- **`place(xyz)`.** The arm puts the held object's origin at `xyz`, waits 0.3 s, switches off the weld, and lifts. If `xyz` is in the air, the object falls. The rules judge this result.
+- **Wait before a weld change.** The position servos lag behind the targets by several millimetres while the arm moves. Without the wait, the weld moves the object when it switches on.
+- **Weld pose.** Compile calculates the object's pose in the hand frame from the planned grasp. Playback writes this pose to the model before the weld switches on. The check and the execution use the same value.
+- **Fail closed.** An unknown tool, a missing or unknown argument, a value that is not a number, a speed that is not positive, an unknown object or a point that the arm cannot reach causes `CompileError`. The firewall changes `CompileError` into BLOCK.
+- **Time.** Compile takes about 20 ms for `pick` on a laptop CPU. Playback of a 3.5 s motion takes about 70 ms.
 
 ## What to build for each step
 
