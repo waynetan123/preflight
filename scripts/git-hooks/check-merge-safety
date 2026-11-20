@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Blocks a commit (pre-commit) or an automatic merge commit (pre-merge-commit) that would leave the repo
+broken in the two ways merges have broken it before:
+
+1. Conflict markers: a staged file still has a <<<<<<<, ||||||| or >>>>>>> line from a merge.
+2. Alembic heads: the staged migrations in backend/alembic/versions don't form one chain (two migrations
+   with the same down_revision, so `alembic upgrade head` fails and the backend won't start), or two
+   migrations share a revision ID.
+
+Checks what is staged (the index), not the working tree, so it judges exactly what would be committed.
+Needs only python3, no virtualenv or database. Skip it for one commit with `git commit --no-verify`.
+Enabled per clone with `git config core.hooksPath scripts/git-hooks` (see README.md).
+"""
+
+import ast
+import subprocess
+import sys
+
+MIGRATIONS = "backend/alembic/versions/"
+MARKERS = ("<<<<<<<", "|||||||", ">>>>>>>")  # not "=======": a Markdown heading underline looks the same
+
+
+def git(*args: str) -> bytes:
+    return subprocess.run(["git", *args], check=True, capture_output=True).stdout
+
+
+def staged(path: str) -> bytes:
+    return git("show", f":{path}")
+
+
+def conflict_markers() -> list[str]:
+    """'path:line: text' for each conflict marker in a staged file this commit adds or changes."""
+    found = []
+    paths = git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z").decode().split("\0")
+    for path in filter(None, paths):
+        data = staged(path)
+        if b"\0" in data:  # binary
+            continue
+        for number, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
+            if line.startswith(MARKERS) and (len(line) == 7 or line[7] == " "):
+                found.append(f"{path}:{number}: {line[:60]}")
+    return found
+
+
+def revision_ids(source: bytes, path: str):
+    """(revision, [down_revisions]) from a migration's module-level assignments, or None if it has none."""
+    values = {}
+    for node in ast.parse(source, filename=path).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (node.targets[0] if isinstance(node, ast.Assign) else None)
+        if isinstance(target, ast.Name) and target.id in ("revision", "down_revision") and node.value is not None:
+            values[target.id] = ast.literal_eval(node.value)
+    if "revision" not in values:
+        return None
+    down = values.get("down_revision")
+    parents = [] if down is None else [down] if isinstance(down, str) else list(down)  # a merge migration lists several
+    return values["revision"], parents
+
+
+def alembic_problems() -> list[str]:
+    paths = git("ls-files", "-z", "--", MIGRATIONS).decode().split("\0")
+    files, parents = {}, {}
+    problems = []
+    for path in paths:
+        if not path.endswith(".py") or path.endswith("__init__.py"):
+            continue
+        try:
+            ids = revision_ids(staged(path), path)
+        except SyntaxError as exc:
+            problems.append(f"{path}: can't be read as Python ({exc.msg}, line {exc.lineno})")
+            continue
+        if ids is None:
+            continue
+        revision, down = ids
+        if revision in files:
+            problems.append(f"revision {revision!r} is in both {files[revision]} and {path}")
+        files[revision], parents[revision] = path, down
+    heads = sorted(set(files) - {parent for down in parents.values() for parent in down})
+    if len(heads) > 1:
+        problems.append(
+            "Alembic would have more than one head, so `alembic upgrade head` fails and the backend won't start:\n"
+            + "\n".join(f"      {head}  ({files[head]}, down_revision {parents[head]})" for head in heads)
+            + "\n    Point the newer migration's down_revision (and its 'Revises:' line) at the other one."
+        )
+    return problems
+
+
+def main() -> int:
+    hook = sys.argv[1] if len(sys.argv) > 1 else "commit"
+    markers, migrations = conflict_markers(), alembic_problems()
+    if not markers and not migrations:
+        return 0
+    print(f"\n✘ {hook} blocked by scripts/git-hooks/check-merge-safety\n", file=sys.stderr)
+    if markers:
+        print("  Conflict markers still in staged files (resolve them, then `git add`):", file=sys.stderr)
+        for line in markers[:20]:
+            print(f"    {line}", file=sys.stderr)
+        if len(markers) > 20:
+            print(f"    … and {len(markers) - 20} more", file=sys.stderr)
+    for problem in migrations:
+        print(f"  {problem}", file=sys.stderr)
+    print("\n  To commit anyway (not recommended): git commit --no-verify\n", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
