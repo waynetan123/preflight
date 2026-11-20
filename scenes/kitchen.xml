@@ -313,6 +313,7 @@
                         <geom class="panda/visual" quat="1 0 0 0" material="panda/white" mesh="panda/hand_3"/>
                         <geom class="panda/visual" quat="1 0 0 0" material="panda/off_white" mesh="panda/hand_4"/>
                         <geom class="panda/collision" quat="1 0 0 0" mesh="panda/hand_c"/>
+                        <site name="panda/tcp" pos="0 0 0.1034" rgba="1 0 0 0.5"/>
                         <body name="panda/left_finger" pos="0 0 0.0584" gravcomp="1">
                           <inertial pos="0 0 0" mass="0.015" diaginertia="2.375e-06 2.375e-06 7.5e-07"/>
                           <joint name="panda/finger_joint1" class="panda/finger"/>
