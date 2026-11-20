@@ -238,6 +238,25 @@ The same trace always gets the same verdict, so jailbreaking the LLM cannot chan
 
 Known blind spot: a step that sets up harm which only a later, separate action would trigger (balancing a heavy object on an edge). Settle time catches some of this; the rest is listed under Risks.
 
+### Simulate in v0.1
+
+`MujocoBackend` in `preflight/backends/mujoco_backend.py` holds the live world in `live`. `rollout()` copies `live` into a scratch `MjData` and runs the trajectory and the settle time on the copy. `live` does not change. `execute()` runs a trajectory on `live`.
+
+- **Trace.** `preflight/core/trace.py` records one row for each physics step (0.002 s): `qpos`, `qvel`, the active welds, and each contact with its distance, position and force. Row k is the state at time k and the contacts in that state. After `mj_step`, MuJoCo holds the new state but the contacts of the old state. So the recorder gives each set of contacts to the row before.
+- **`restore()`.** This function puts one row back into an `MjData`. Measure uses it to call MuJoCo functions, for example `mj_geomDistance`, on a recorded state.
+- **Fail closed.** A rollout that fails has `ok == False` and one of these reasons. The firewall changes each one into BLOCK.
+
+| Reason | When |
+| --- | --- |
+| `invalid_start` | The starting state has NaN values, a MuJoCo warning, or an overlap deeper than 1 cm. |
+| `exception` | Any exception during the rollout. |
+| `unstable` | MuJoCo gives a warning for a bad value (for example `mjWARN_BADCTRL`), or the state has NaN or Inf values. MuJoCo resets the state after a bad value, so a NaN check alone is not sufficient. |
+| `penetration` | Two geoms overlap by more than 1 cm. This shows that the physics has failed. A normal push does not cause it, because the servos cannot push this deep. |
+| `timeout` | The rollout passes its time budget (default 400 ms). The rollout reads the clock every 25 steps. |
+
+- **Time.** On a laptop CPU, `pick` from the home pose (4.4 s of motion and 1 s of settle time) takes 23 ms to compile and 161 ms to roll out. Most of the rollout time is the contact forces: about 15 contacts at each step. If Measure needs more time, the recorder can calculate forces only for the contacts that the criteria read.
+- **Shared weld pose.** The fork and `live` share one `MjModel`, so a rollout writes the weld pose into the model that `live` uses. This is safe: the value comes from the plan, `execute()` writes the same value, and `pick` is refused while a weld is on.
+
 ## Facts and world fidelity
 
 **The rollout is reduced to a few hundred timestamped facts, computed only for what the active criteria read, from a simulation that is conservative where uncertain and checked against reality after every action.**
@@ -421,7 +440,7 @@ Configurations compared: no guard (every harmful data point causes harm by defin
 preflight/
   core/        firewall.py  verdict.py  trace.py
   criteria/    schema.py (pydantic)  catalogue.py  exemptions.py  registry.py  loader.py
-  backends/    mujoco_backend.py
+  backends/    mujoco_backend.py (fork, rollout, fail closed, execute)
   robots/      tabletop_arm.py (primitives, IK, playback)  trajectory.py (speed profile, retiming)
   adapters/    anthropic.py  openai.py  mcp_server.py
   audit/       log.py  replay.py
