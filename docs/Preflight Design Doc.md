@@ -293,6 +293,25 @@ Each criterion declares the facts it reads; the extractor computes only their un
 
 Contacts cost nothing extra because MuJoCo computes them every step. Proximity is recorded only within a 1 m reporting radius, and events only when they happen.
 
+### Measure in v0.1
+
+`Measure` in `preflight/measure/` computes facts from a `Trace`. Each criterion declares the facts that it reads as `Need` values in the registry. `REGISTRY.needs()` gives their union, and Measure computes only these facts.
+
+| Need | What Measure gives | Rows |
+| --- | --- | --- |
+| `contact`, tag | Each contact between the robot (or the held object) and a body with the tag: time, both bodies, normal force | Every physics step |
+| `proximity`, two groups | The smallest distance between the groups, and the two nearest bodies. A group is a tag or `gripper` (the hand, the fingers and the held object). | Every 5th step (10 ms) and the last step |
+| `speed` | The speed of the TCP and of the held object | Every 5th step |
+| `tilt`, tag | The angle from upright of each body with the tag | Every 5th step |
+| `fall`, tag | Each drop of a body with the tag: release time, impact time, drop height, impact speed | Every physics step |
+
+- **Fast distances.** Bounding spheres give a lower limit for each geom pair. Measure tests the pairs in the sequence of this limit and stops when the limit is more than the best distance. A test compares the result with a test of all pairs.
+- **Falls.** A fall starts when a body has no contact and no grasp, and ends at the next contact. A loss of contact shorter than 0.05 s, or a drop smaller than 2 cm, is not a fall.
+- **Not yet supplied.** The facts for `workspace`, `robot_limits`, `hazard_allowlist` and `no_side_effects` are not in Measure yet. These criteria declare no needs.
+- **Time.** On a laptop CPU, compile, rollout and Measure together take about 90 ms for a short `move_to`. They take 266 ms for `pick` from the home pose (5.4 s simulated).
+
+**Stiff contacts for rigid objects.** MuJoCo's default contact time constant (`solref` 0.02 s) is soft. With it, a drop of 0.2 m put a plate 13 mm into the table, and the rollout failed with `penetration`. `scenes/build_kitchen.py` now gives the floor, the table, the sink and the props a time constant of 0.004 s (2 × the timestep). The overlap for the same drop is now about 2 mm. The person and the robot keep their values, because their stiffness controls the measured strike forces. This change raised the peak force of the hot cup on the hand from 117 N to 156 N in the same test.
+
 ### Keeping the simulation trustworthy
 
 In v0.1 the MJCF scene is the world, so the model is exact by construction. To avoid flattering results, the live sim uses perturbed masses, friction and human poses, and the evaluation reports that gap.
@@ -439,6 +458,7 @@ Configurations compared: no guard (every harmful data point causes harm by defin
 ```text
 preflight/
   core/        firewall.py  verdict.py  trace.py
+  measure/     facts.py  measure.py
   criteria/    schema.py (pydantic)  catalogue.py  exemptions.py  registry.py  loader.py
   backends/    mujoco_backend.py (fork, rollout, fail closed, execute)
   robots/      tabletop_arm.py (primitives, IK, playback)  trajectory.py (speed profile, retiming)
@@ -687,6 +707,8 @@ Open questions:
 - [ ] Is the name free? Check PyPI and GitHub for `preflight-robot` and pick a fallback.
 - [ ] Which hosted and open-weight models for the LLM-judge baseline, and what API budget for judging about 2,000 data points with each?
 - [ ] Should the agent's system prompt say it is guarded, or should the firewall stay invisible?
+- [x] The kitchen scene starts with clearance violations: the hot cup is 22 cm and the knife is 19 cm from the left hand, and both limits are 30 cm. Should Check judge only what the action makes worse, should the scene change, or should the limits change? Check judges only what the action makes worse. A clearance violation counts only if the action moves the distance below the limit, or makes it smaller than it was at the start. The scene and the limits do not change.
+- [ ] Should the person's contact stiffness come from body-region data (ISO/TS 15066 gives stiffness values)? It sets the measured strike forces.
 - [x] Static human for v0.1, or a scripted moving hand from the start? Static human: `scenes/kitchen.xml` freezes the humanoid in one pose.
 
 ## Sources

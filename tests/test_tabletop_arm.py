@@ -99,8 +99,11 @@ def test_speed_is_capped_and_the_request_is_kept(arm, data):
 
 
 def test_unreachable_point(arm, data):
-    with pytest.raises(CompileError, match="cannot reach"):
+    with pytest.raises(CompileError) as exc:
         arm.compile(data, "move_to", {"xyz": [2.0, 0.0, 1.0]})
+    # The target comes first, then the point where the path leaves the reach.
+    assert str(exc.value).startswith("move_to: the arm cannot reach [2.0, 0.0, 1.0] with the gripper down; "
+                                     "the path leaves the reach at [")
 
 
 @pytest.mark.parametrize("tool, args, message", [
