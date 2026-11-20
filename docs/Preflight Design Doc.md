@@ -125,29 +125,53 @@ The first nine criteria are measured from physics. `hazard_allowlist` covers hea
 
 ### Configuration
 
-Every built-in criterion is on by default. A config file supplies the scene tags and tunes thresholds; it cannot switch a criterion off.
+Every built-in criterion is on by default. A config file supplies the scene tags and tunes thresholds; it cannot switch a criterion off. The rules file for each scene is next to the scene, for example `scenes/kitchen_rules.yaml`.
 
 ```yaml
 version: 1
-scene: scenes/kitchen.xml
+scene: kitchen.xml                 # relative to the rules file
 horizon: {settle_s: 1.0}
 
-tags:
-  human:      [human_torso, human_hand_left, human_hand_right]
+tags:                              # body-name patterns
+  human:      ["human_*"]
   sharp:      [knife]
   hot:        [hot_cup]
   fragile:    [plate]
   liquid:     [hot_cup]
   receptacle: [sink]
 
+human_model:                       # body region of each human body
+  profile: mujoco_humanoid
+  prefix: human_
+
 criteria:
   params:                          # placeholder values
     no_human_strike: {max_force_n: {hand: 50, torso: 40, head: 0}}
     sharp_clearance: {min_m: 0.30}
     no_spill:        {max_tilt_deg: 30}
+    workspace: {min_xyz: [-0.30, -0.60, 0.75], max_xyz: [0.80, 0.40, 1.60]}
   on_violation:                    # block (default) | modify | warn
     slow_near_human: modify        # retime instead of block
 ```
+
+### Loader
+
+`preflight.criteria.load_rules()` reads the rules file and checks it. If the file has a problem, the loader stops and the firewall does not start. The loader shows all problems together. Each problem gives its location in the file.
+
+The loader applies these rules:
+
+1. **Unknown keys are errors.** A misspelled key stops the load.
+2. **Duplicate keys are errors.** Plain PyYAML keeps the last value and gives no warning, so the loader uses its own check.
+3. **Each pattern in `tags` must match a body in the scene.** Patterns use `fnmatch` syntax, for example `human_*`. At least one body must have the `human` tag.
+4. **Tags come from the criteria.** Each criterion declares the tags that it reads. A file can use only these tags.
+5. **Each human body must have a region.** A region profile (`human_model.profile` and `prefix`) gives the regions. Entries in `human_model.regions` override the profile. Each region in use must have a force limit.
+6. **Defaults fill in missing parameters.** A file can change one key of a parameter map, for example only the `hand` force limit. `workspace` has no default, so each file must give it.
+7. **Hard floor.** An exemption cannot relax a non-waivable criterion. Also, `on_violation: warn` is not permitted on a non-waivable criterion, because `warn` would switch it off.
+8. **Exemptions.** The exemption tag must be a tag that the relaxed criterion reads. `replace_with` must name at least one replacement criterion.
+
+The loader returns a `Rules` object. This object cannot change after the load. The later stages read only this object.
+
+**Plug-in criteria.** A plug-in adds a criterion with `preflight.criteria.register()`. This makes the tags of the criterion valid. A plug-in cannot replace a criterion that is already registered, so it cannot make a built-in criterion waivable. A person reviews and commits each plug-in. The loader does not load criteria at runtime.
 
 ### Task exemptions
 
@@ -396,13 +420,13 @@ Configurations compared: no guard (every harmful data point causes harm by defin
 ```text
 preflight/
   core/        firewall.py  verdict.py  trace.py
-  criteria/    schema.py (pydantic)  catalogue.py  exemptions.py  registry.py
+  criteria/    schema.py (pydantic)  catalogue.py  exemptions.py  registry.py  loader.py
   backends/    mujoco_backend.py
   robots/      tabletop_arm.py (primitives, IK, retiming)
   adapters/    anthropic.py  openai.py  mcp_server.py
   audit/       log.py  replay.py
   cli.py
-scenes/        kitchen.xml  lab.xml  workshop.xml
+scenes/        kitchen.xml  kitchen_rules.yaml  lab.xml  workshop.xml
 datasets/      templates/*.yaml  points/*.yaml
 eval/          generate.py  label.py  score.py  harm_oracle.py  judge.py  report.py
 examples/      quickstart.py  claude_agent.py  mcp_demo.md

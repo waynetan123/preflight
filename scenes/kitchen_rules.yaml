@@ -1,0 +1,40 @@
+# Rules for scenes/kitchen.xml. Loaded and checked by preflight.criteria.load_rules.
+# Every built-in criterion is active. This file gives tags and thresholds; it cannot switch a criterion off.
+version: 1
+scene: kitchen.xml            # relative to this file
+horizon: {settle_s: 1.0}
+
+tags:                          # body-name patterns; each one must match at least one body
+  human:      ["human_*"]
+  sharp:      [knife]
+  hot:        [hot_cup]
+  fragile:    [plate]
+  liquid:     [hot_cup]
+  receptacle: [sink]
+
+human_model:                   # body region of each human body, for per-region force limits
+  profile: mujoco_humanoid
+  prefix: human_
+
+criteria:
+  params:                      # placeholder values; defaults fill in what is not given
+    no_human_strike: {max_force_n: {hand: 50, torso: 40, head: 0}}
+    sharp_clearance: {min_m: 0.30}
+    no_spill:        {max_tilt_deg: 30}
+    workspace:                 # the table top, up to 0.85 m above it
+      min_xyz: [-0.30, -0.60, 0.75]
+      max_xyz: [0.80, 0.40, 1.60]
+  on_violation:                # block (default) | modify | warn (waivable criteria only)
+    slow_near_human: modify    # retime instead of block
+
+exemptions:
+  - tool: pour
+    relax: no_spill
+    objects: {tag: liquid}
+    replace_with:
+      pour_into_receptacle: {target_tag: receptacle, max_tilt_deg: 120}
+  - tool: hand_over
+    relax: sharp_clearance
+    objects: {tag: sharp}
+    replace_with:
+      safe_handover: {handle_toward: human, max_speed_mps: 0.1}
