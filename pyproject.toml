@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "preflight-robot"
+version = "0.0.1"
+description = "A physics firewall that simulates every action an LLM-driven robot proposes and blocks the unsafe ones."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mujoco>=3.3",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["preflight"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
