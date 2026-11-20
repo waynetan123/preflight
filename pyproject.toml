@@ -10,6 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
+    "mink>=1.4",
     "mujoco>=3.3",
     "numpy",
 ]
