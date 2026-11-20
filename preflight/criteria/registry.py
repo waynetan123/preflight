@@ -30,6 +30,23 @@ class Params(BaseModel):
 
 
 @dataclass(frozen=True)
+class Need:
+    """One kind of fact that a criterion reads. Measure computes only the facts that criteria need.
+
+    kind:
+        contact     contacts between the robot or the held object and bodies of tags[0]
+        proximity   smallest distance between two groups: tags[0] and tags[1]
+        speed       speed of the TCP and of the held object
+        tilt        angle from upright of each body of tags[0]
+        fall        drops of each body of tags[0]: height and impact speed
+    A group is a tag from the rules file, or "gripper": the hand, the fingers and the held object.
+    """
+
+    kind: Literal["contact", "proximity", "speed", "tilt", "fall"]
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CriterionSpec:
     id: str
     kind: Literal["state", "trace"]
@@ -40,6 +57,8 @@ class CriterionSpec:
     tags: tuple[str, ...] = ()
     # A replacement is active only inside an exemption's `replace_with`, never on its own.
     replacement: bool = False
+    # Facts the criterion reads. Empty means Measure does not supply its facts yet.
+    needs: tuple[Need, ...] = ()
 
 
 class Registry:
@@ -66,6 +85,10 @@ class Registry:
 
     def tags(self) -> set[str]:
         return {tag for spec in self._specs.values() for tag in spec.tags}
+
+    def needs(self, criterion_ids) -> set[Need]:
+        """The union of the facts that these criteria read."""
+        return {need for cid in criterion_ids for need in self._specs[cid].needs}
 
     def copy(self) -> Registry:
         other = Registry()

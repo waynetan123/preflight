@@ -45,6 +45,10 @@ HUMAN_HAND_RADIUS = 0.04
 ARM_JOINTS = ("shoulder1", "shoulder2", "elbow")
 
 GRASPABLE = ("hot_cup", "knife", "plate")
+# Contact time constant for rigid things (floor, table, sink, props): 2 x timestep, the stiffest stable value.
+# MuJoCo's default of 0.02 lets a 0.2 m drop sink 13 mm into the table; this keeps it near 2 mm.
+# The human and the robot keep the default, because their stiffness sets the measured strike forces.
+RIGID_SOLREF = (0.004, 1.0)
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,7 @@ def build_kitchen(pose: HumanPose = DEFAULT_HUMAN_POSE) -> mujoco.MjSpec:
     _add_table(spec)
     _add_sink(spec)
     _add_props(spec)
+    _stiffen_rigid(spec)
     _attach_panda(spec)
     _attach_human(spec, pose)
     _add_grasp_welds(spec)
@@ -146,6 +151,12 @@ def _add_sink(spec: mujoco.MjSpec) -> None:
         ("sink_wall_ny", (0, -inner[1] - wall_t, z), (inner[0], wall_t, wall_h)),
     ):
         sink.add_geom(name=name, type=box, size=size, pos=pos, material="steel")
+
+
+def _stiffen_rigid(spec: mujoco.MjSpec) -> None:
+    """Set RIGID_SOLREF on every geom that exists so far: the environment, table, sink and props."""
+    for geom in spec.geoms:
+        geom.solref = RIGID_SOLREF
 
 
 def _add_props(spec: mujoco.MjSpec) -> None:

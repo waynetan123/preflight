@@ -107,7 +107,9 @@ def test_settle_time_shows_a_drop(sim, arm):
     sim.execute(arm, arm.compile(sim.live, "pick", {"object": "hot_cup"}))
     # Let go 0.25 m above the table: the cup falls after the motion ends.
     traj = arm.compile(sim.live, "place", {"xyz": [0.30, -0.10, 1.05]})
-    trace = sim.rollout(arm, traj, settle_s=1.0).trace
+    rollout = sim.rollout(arm, traj, settle_s=1.0)
+    assert rollout.ok, rollout.detail  # a drop is a result to judge, not a broken simulation
+    trace = rollout.trace
     scratch = mujoco.MjData(sim.model)
     trace.restore(sim.model, scratch, len(trace) - 1)
     assert scratch.body("hot_cup").xpos[2] < TABLE_TOP_Z + CUP_HALF_HEIGHT + 0.02
@@ -167,9 +169,9 @@ def test_bad_starting_state_fails_closed(sim, arm):
 
 
 def test_penetration_during_rollout_fails_closed(sim, arm, monkeypatch):
-    # Real overlaps this deep need broken physics. With a 0.1 mm limit, props that rest on the table
-    # (about 0.2 to 0.4 mm of overlap) trigger the check.
-    monkeypatch.setattr("preflight.backends.mujoco_backend.MAX_PENETRATION_M", 1e-4)
+    # Real overlaps this deep need broken physics. With a 0.01 mm limit, props that rest on the table
+    # (up to about 0.04 mm of overlap) trigger the check.
+    monkeypatch.setattr("preflight.backends.mujoco_backend.MAX_PENETRATION_M", 1e-5)
     rollout = sim.rollout(arm, arm.compile(sim.live, "move_to", {"xyz": [0.45, 0.1, 1.0]}))
     assert rollout.failure == "penetration"
     assert "table" in rollout.detail

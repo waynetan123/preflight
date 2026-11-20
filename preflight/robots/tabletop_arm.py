@@ -74,6 +74,11 @@ class TabletopArm:
             for i in range(model.neq)
             if model.equality(i).name.startswith(GRASP_PREFIX)
         }
+        # For Measure: which bodies are the robot and the gripper, and which weld holds which object.
+        self.tcp_site = self._tcp
+        self.bodies = frozenset(b for b in range(model.nbody) if model.body(b).name.startswith(prefix))
+        self.gripper_bodies = frozenset(b for b in self.bodies if b == self._hand or model.body_parentid[b] == self._hand)
+        self.grasp_welds = MappingProxyType(dict(self._welds))  # object name -> equality id
 
         # The gripper keeps the orientation it has at the home keyframe: pointing down.
         home = model.key("home").qpos.copy()
@@ -112,7 +117,7 @@ class TabletopArm:
         else:
             legs = self._place_legs(data, _xyz(tool, args["xyz"]), speed)
 
-        t, q, events, peak = self._plan(data, legs)
+        t, q, events, peak = self._plan(tool, data, legs)
         trajectory = Trajectory(
             tool=tool, args=MappingProxyType(dict(args)), t=t, q=q,
             gripper=float(data.ctrl[self._gripper_act]), events=events,
@@ -165,7 +170,7 @@ class TabletopArm:
         approach = min(speed, APPROACH_SPEED_MPS)
         return [(hover, speed, None), (target, approach, weld_off), (hover, approach, None)]
 
-    def _plan(self, data, legs: list[tuple[np.ndarray, float, Callable[[float], WeldEvent] | None]]):
+    def _plan(self, tool: str, data, legs: list[tuple[np.ndarray, float, Callable[[float], WeldEvent] | None]]):
         """Straight TCP lines through the legs' targets, sampled every SAMPLE_DT and solved with IK."""
         self._config.update(data.qpos.copy())
         p = data.site_xpos[self._tcp].copy()
@@ -176,7 +181,15 @@ class TabletopArm:
             t, s, v_peak = trapezoid(distance, speed, ACCEL_MPS2, SAMPLE_DT)
             for ti, si in zip(t[1:], s[1:]):
                 times.append(t_end + ti)
-                qs.append(self._ik(p + (target - p) * (si / distance)))
+                point = p + (target - p) * (si / distance)
+                q = self._ik(point)
+                if q is None:
+                    # Name the target first: the caller knows it, and an LLM must not aim for the edge point.
+                    raise CompileError(
+                        f"{tool}: the arm cannot reach {_round(target)} with the gripper down; "
+                        f"the path leaves the reach at {_round(point)}"
+                    )
+                qs.append(q)
             t_end += t[-1]
             peak = max(peak, v_peak)
             p = target
@@ -187,8 +200,11 @@ class TabletopArm:
                 events.append(event(t_end))
         return np.array(times), np.array(qs), tuple(events), peak
 
-    def _ik(self, point: np.ndarray) -> np.ndarray:
-        """Arm joints that put the TCP at `point` with the gripper down, starting from the last solution."""
+    def _ik(self, point: np.ndarray) -> np.ndarray | None:
+        """Arm joints that put the TCP at `point` with the gripper down, starting from the last solution.
+
+        None if no solution is within IK_POS_TOL_M and IK_ROT_TOL_RAD.
+        """
         self._tcp_task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3.from_matrix(self._down), point))
         tasks = [self._tcp_task, self._posture]
         for _ in range(IK_MAX_ITERS):
@@ -199,10 +215,7 @@ class TabletopArm:
             self._config.integrate_inplace(velocity, IK_DT)
         pos_err, rot_err = self._tcp_error(point)
         if pos_err > IK_POS_TOL_M or rot_err > IK_ROT_TOL_RAD:
-            raise CompileError(
-                f"the arm cannot reach {np.round(point, 3).tolist()} with the gripper down "
-                f"(off by {pos_err * 1000:.0f} mm, {math.degrees(rot_err):.1f} deg)"
-            )
+            return None
         return self._config.q[self._qadr].copy()
 
     def _tcp_error(self, point: np.ndarray) -> tuple[float, float]:
@@ -267,6 +280,10 @@ def _speed(tool: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
         raise CompileError(f"{tool}: speed must be a positive number in m/s, not {value!r}")
     return float(value)
+
+
+def _round(point: np.ndarray) -> list[float]:
+    return [round(float(v), 3) for v in point]
 
 
 def _relative_pose(p1, q1, p2, q2) -> tuple[float, ...]:

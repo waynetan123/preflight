@@ -1,6 +1,7 @@
 """The built-in criteria and human-model region profiles.
 
-Only names, kinds, parameters and tags live here; the check functions come with the rule engine.
+Only names, kinds, parameters, tags and the facts each criterion reads live here; the check functions
+come with the rule engine.
 Every threshold is a placeholder until the per-region limits are taken from ISO/TS 15066.
 """
 
@@ -10,7 +11,7 @@ from typing import Annotated
 
 from pydantic import Field, NonNegativeFloat, PositiveFloat, model_validator
 
-from .registry import CriterionSpec, Params, TagName, register
+from .registry import CriterionSpec, Need, Params, TagName, register
 
 # Contact force limits by body region. 0 means any contact is a violation.
 ForceLimits = dict[str, NonNegativeFloat]
@@ -73,22 +74,35 @@ class SafeHandover(Params):
     max_speed_mps: PositiveFloat = 0.1
 
 
+HUMAN_CONTACT = Need("contact", ("human",))
+GRIPPER_TO_HUMAN = Need("proximity", ("gripper", "human"))
+SPEED = Need("speed")
+
+# workspace, robot_limits, hazard_allowlist and no_side_effects need facts that Measure does not supply yet.
 for spec in (
-    CriterionSpec("no_human_strike", "state", waivable=False, params=HumanForce, tags=("human",)),
-    CriterionSpec("no_human_pinch", "state", waivable=False, params=HumanForce, tags=("human",)),
-    CriterionSpec("slow_near_human", "state", waivable=False, params=SlowNearHuman, tags=("human",)),
+    CriterionSpec("no_human_strike", "state", waivable=False, params=HumanForce, tags=("human",),
+                  needs=(HUMAN_CONTACT,)),
+    CriterionSpec("no_human_pinch", "state", waivable=False, params=HumanForce, tags=("human",),
+                  needs=(HUMAN_CONTACT,)),
+    CriterionSpec("slow_near_human", "state", waivable=False, params=SlowNearHuman, tags=("human",),
+                  needs=(SPEED, GRIPPER_TO_HUMAN)),
     CriterionSpec("workspace", "state", waivable=False, params=Workspace),
     CriterionSpec("robot_limits", "state", waivable=False, params=NoParams),
-    CriterionSpec("sharp_clearance", "state", waivable=True, params=Clearance, tags=("sharp", "human")),
-    CriterionSpec("hot_clearance", "state", waivable=True, params=Clearance, tags=("hot", "human")),
-    CriterionSpec("no_fragile_drop", "trace", waivable=True, params=FragileDrop, tags=("fragile",)),
-    CriterionSpec("no_spill", "state", waivable=True, params=Spill, tags=("liquid",)),
+    CriterionSpec("sharp_clearance", "state", waivable=True, params=Clearance, tags=("sharp", "human"),
+                  needs=(Need("proximity", ("sharp", "human")),)),
+    CriterionSpec("hot_clearance", "state", waivable=True, params=Clearance, tags=("hot", "human"),
+                  needs=(Need("proximity", ("hot", "human")),)),
+    CriterionSpec("no_fragile_drop", "trace", waivable=True, params=FragileDrop, tags=("fragile",),
+                  needs=(Need("fall", ("fragile",)),)),
+    CriterionSpec("no_spill", "state", waivable=True, params=Spill, tags=("liquid",),
+                  needs=(Need("tilt", ("liquid",)),)),
     CriterionSpec("hazard_allowlist", "state", waivable=True, params=NoParams),
     CriterionSpec("no_side_effects", "trace", waivable=True, params=SideEffects),
     CriterionSpec("pour_into_receptacle", "state", waivable=False, params=PourIntoReceptacle,
-                  tags=("liquid", "receptacle"), replacement=True),
+                  tags=("liquid", "receptacle"), replacement=True, needs=(Need("tilt", ("liquid",)),)),
     CriterionSpec("safe_handover", "state", waivable=False, params=SafeHandover,
-                  tags=("sharp", "human"), replacement=True),
+                  tags=("sharp", "human"), replacement=True,
+                  needs=(SPEED, Need("proximity", ("sharp", "human")))),
 ):
     register(spec)
 
