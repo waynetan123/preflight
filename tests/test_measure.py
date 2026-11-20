@@ -57,7 +57,7 @@ def _over_hand(sim, height):
 def test_kitchen_needs():
     needs = REGISTRY.needs(RULES.params)
     assert {HUMAN_CONTACT, SPEED, GRIPPER_TO_HUMAN, HOT_TO_HUMAN, Need("proximity", ("sharp", "human")),
-            Need("tilt", ("liquid",)), Need("fall", ("fragile",))} == needs
+            Need("tilt", ("liquid",)), Need("fall", ("fragile",)), Need("position")} == needs
 
 
 def test_only_needed_facts_are_computed(sim, arm, measure):

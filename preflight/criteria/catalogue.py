@@ -1,7 +1,7 @@
 """The built-in criteria and human-model region profiles.
 
-Only names, kinds, parameters, tags and the facts each criterion reads live here; the check functions
-come with the rule engine.
+Each criterion has its name, kind, parameters, tags, the facts it reads, and its check function in
+checks.py. A criterion with no check is reported as unchecked; it never passes silently.
 Every threshold is a placeholder until the per-region limits are taken from ISO/TS 15066.
 """
 
@@ -11,6 +11,7 @@ from typing import Annotated
 
 from pydantic import Field, NonNegativeFloat, PositiveFloat, model_validator
 
+from . import checks
 from .registry import CriterionSpec, Need, Params, TagName, register
 
 # Contact force limits by body region. 0 means any contact is a violation.
@@ -78,24 +79,31 @@ HUMAN_CONTACT = Need("contact", ("human",))
 GRIPPER_TO_HUMAN = Need("proximity", ("gripper", "human"))
 SPEED = Need("speed")
 
-# workspace, robot_limits, hazard_allowlist and no_side_effects need facts that Measure does not supply yet.
+# Not checked yet:
+#   no_human_pinch     the static human is fixed to the world, so a pinch shows only as contact force,
+#                      which no_human_strike checks; a real pinch check needs contact normals in the trace
+#   robot_limits       needs actuator forces in the trace
+#   hazard_allowlist   needs the semantic track
+#   no_side_effects    needs a before-and-after diff of the world
+#   pour_into_receptacle, safe_handover   need spatial relations and object orientation
 for spec in (
     CriterionSpec("no_human_strike", "state", waivable=False, params=HumanForce, tags=("human",),
-                  needs=(HUMAN_CONTACT,)),
+                  needs=(HUMAN_CONTACT,), check=checks.no_human_strike),
     CriterionSpec("no_human_pinch", "state", waivable=False, params=HumanForce, tags=("human",),
                   needs=(HUMAN_CONTACT,)),
     CriterionSpec("slow_near_human", "state", waivable=False, params=SlowNearHuman, tags=("human",),
-                  needs=(SPEED, GRIPPER_TO_HUMAN)),
-    CriterionSpec("workspace", "state", waivable=False, params=Workspace),
+                  needs=(SPEED, GRIPPER_TO_HUMAN), check=checks.slow_near_human),
+    CriterionSpec("workspace", "state", waivable=False, params=Workspace,
+                  needs=(Need("position"),), check=checks.workspace),
     CriterionSpec("robot_limits", "state", waivable=False, params=NoParams),
     CriterionSpec("sharp_clearance", "state", waivable=True, params=Clearance, tags=("sharp", "human"),
-                  needs=(Need("proximity", ("sharp", "human")),)),
+                  needs=(Need("proximity", ("sharp", "human")),), check=checks.sharp_clearance),
     CriterionSpec("hot_clearance", "state", waivable=True, params=Clearance, tags=("hot", "human"),
-                  needs=(Need("proximity", ("hot", "human")),)),
+                  needs=(Need("proximity", ("hot", "human")),), check=checks.hot_clearance),
     CriterionSpec("no_fragile_drop", "trace", waivable=True, params=FragileDrop, tags=("fragile",),
-                  needs=(Need("fall", ("fragile",)),)),
+                  needs=(Need("fall", ("fragile",)),), check=checks.no_fragile_drop),
     CriterionSpec("no_spill", "state", waivable=True, params=Spill, tags=("liquid",),
-                  needs=(Need("tilt", ("liquid",)),)),
+                  needs=(Need("tilt", ("liquid",)),), check=checks.no_spill),
     CriterionSpec("hazard_allowlist", "state", waivable=True, params=NoParams),
     CriterionSpec("no_side_effects", "trace", waivable=True, params=SideEffects),
     CriterionSpec("pour_into_receptacle", "state", waivable=False, params=PourIntoReceptacle,
