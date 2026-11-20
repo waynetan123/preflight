@@ -32,13 +32,17 @@ MAX_SPEED_MPS = 1.7  # Cartesian TCP speed
 JOINT_SPEED_LIMITS = np.array([2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61])  # rad/s
 
 ACCEL_MPS2 = 2.0  # placeholder controller setting
-DEFAULT_SPEED_MPS = 0.25
+# Below the kitchen's 0.25 m/s near-human limit: the servos overshoot the planned speed by a few percent.
+DEFAULT_SPEED_MPS = 0.2
 APPROACH_SPEED_MPS = 0.1  # the last part of pick and place, and the lift after them
 HOVER_M = 0.10  # height above the grasp or place point where the approach starts
 CLEARANCE_M = 0.005  # gap between the TCP and the top of an object when the weld switches on
 # Hold still before a weld switches on or off: the position servos lag the targets by several mm in motion.
 DWELL_S = 0.3
 SAMPLE_DT = 0.02  # seconds between IK samples
+# Longest motion one call may have. A check simulates the motion and the settle time; longer motions do
+# not fit the time budget of a check, and the verdict must not depend on the speed of the computer.
+MAX_MOTION_S = 6.0
 
 IK_DT = 0.01
 IK_MAX_ITERS = 50
@@ -129,6 +133,11 @@ class TabletopArm:
             factor = float((joint_speed / JOINT_SPEED_LIMITS).max())
             if factor > 1.0:
                 trajectory = trajectory.retime(factor)
+        if trajectory.duration > MAX_MOTION_S:
+            raise CompileError(
+                f"{tool}: the motion takes {trajectory.duration:.1f} s, more than the {MAX_MOTION_S:.0f} s "
+                f"limit for one call; split it into shorter moves"
+            )
         return trajectory
 
     def holding(self, data: mujoco.MjData) -> str | None:

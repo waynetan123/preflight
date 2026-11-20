@@ -63,11 +63,13 @@ def slow_near_human(facts: Facts, p: SlowNearHuman, ctx: Context) -> Violation |
     over = np.flatnonzero((prox.dist_m < p.radius_m) & (speed > p.max_speed_mps))
     if not len(over):
         return None
-    i = int(over[0])
+    # The time is the first sample over the limit. The value is the peak near a person, so that a repair
+    # can calculate how much slower the motion must be.
+    i, peak = int(over[0]), int(over[np.argmax(speed[over])])
     return Violation(
-        "slow_near_human", float(facts.t[i]), float(speed[i]), p.max_speed_mps, (prox.a[i], prox.b[i]),
-        f"the gripper moves at {speed[i]:.2f} m/s, {prox.dist_m[i] * 100:.0f} cm from {prox.b[i]}; "
-        f"the limit within {p.radius_m * 100:.0f} cm of a person is {p.max_speed_mps:.2f} m/s",
+        "slow_near_human", float(facts.t[i]), float(speed[peak]), p.max_speed_mps, (prox.a[peak], prox.b[peak]),
+        f"the gripper moves at up to {speed[peak]:.2f} m/s within {p.radius_m * 100:.0f} cm of a person "
+        f"({prox.dist_m[peak] * 100:.0f} cm from {prox.b[peak]}); the limit there is {p.max_speed_mps:.2f} m/s",
     )
 
 

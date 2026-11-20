@@ -267,7 +267,7 @@ Known blind spot: a step that sets up harm which only a later, separate action w
 | `exception` | Any exception during the rollout. |
 | `unstable` | MuJoCo gives a warning for a bad value (for example `mjWARN_BADCTRL`), or the state has NaN or Inf values. MuJoCo resets the state after a bad value, so a NaN check alone is not sufficient. |
 | `penetration` | Two geoms overlap by more than 1 cm. This shows that the physics has failed. A normal push does not cause it, because the servos cannot push this deep. |
-| `timeout` | The rollout passes its time budget (default 400 ms). The rollout reads the clock every 25 steps. |
+| `timeout` | The rollout passes its time budget (default 2 s). This is a backstop for broken physics only: `compile()` limits a motion to 6 s, and a normal rollout of that length takes about 300 ms. The rollout reads the clock every 25 steps. |
 
 - **Time.** On a laptop CPU, `pick` from the home pose (4.4 s of motion and 1 s of settle time) takes 23 ms to compile and 161 ms to roll out. Most of the rollout time is the contact forces: about 15 contacts at each step. If Measure needs more time, the recorder can calculate forces only for the contacts that the criteria read.
 - **Shared weld pose.** The fork and `live` share one `MjModel`, so a rollout writes the weld pose into the model that `live` uses. This is safe: the value comes from the plan, `execute()` writes the same value, and `pick` is refused while a weld is on.
@@ -406,6 +406,22 @@ Repair in v0.1 is speed retiming only: stretch the trajectory in time until spee
 
 Feedback has two modes. `detailed` (default for development) returns the rule and numbers so the LLM can re-plan. `minimal` returns only "blocked by safety policy", so an attacker cannot probe the rules one number at a time.
 
+### Decide in v0.1
+
+`Firewall` in `preflight/core/firewall.py` runs the full chain for one tool call: compile, rollout, Measure, Check, then Decide. `Firewall.check()` decides and does not change the live state. `Firewall.call()` decides, then runs the approved trajectory on the live state.
+
+| Verdict | When |
+| --- | --- |
+| BLOCK | The call does not compile (this includes a motion longer than 6 s), the rollout fails, a finding has action `block`, or the repair fails. |
+| MODIFY | All findings have action `modify` or `warn`, and a slower version of the same path passes a new rollout and a new check. |
+| ALLOW | There are no findings, or all findings have action `warn`. |
+
+- **Repair.** The first guess for the slow-down is the peak measured value divided by the limit, plus 5%. If the slower motion still has a `modify` finding, Decide tries 1.5 times slower, up to 4 times slower. The repaired motion cannot be longer than 6 s. A `block` finding on the slower motion gives BLOCK.
+- **Peak value.** `slow_near_human` reports the time of the first sample over the limit, and the peak speed near the person. With the peak, the first guess is usually correct, and one new rollout is sufficient.
+- **Default speed.** The default speed of a tool call is 0.2 m/s. The servos overshoot the planned speed by a few percent, so a default of 0.25 m/s (the limit) gave a MODIFY for each default motion near the person.
+- **Feedback.** `Decision.message()` gives the tool result. `detailed` gives the rule, the value, the limit and the time. `minimal` gives only "done" or "blocked by safety policy".
+- **Unchecked criteria.** `Decision.unchecked` lists the criteria that could not be checked. They do not change the verdict in v0.1.
+
 Audit log: one JSONL record per decision with timestamp, session id, tool call, a hash of the compiled trajectory, verdict, violations, rollout seed and a hash of the starting state. Blocked actions can also save an MP4 of the rollout. `preflight replay audit.jsonl --id 42` reopens any decision in the MuJoCo viewer.
 
 ## Integration API
@@ -483,7 +499,7 @@ preflight/
 scenes/        kitchen.xml  kitchen_rules.yaml  lab.xml  workshop.xml
 datasets/      templates/*.yaml  points/*.yaml
 eval/          generate.py  label.py  score.py  harm_oracle.py  judge.py  report.py
-examples/      quickstart.py  claude_agent.py  mcp_demo.md
+examples/      gate.py  quickstart.py  claude_agent.py  mcp_demo.md
 tests/
 ```
 
@@ -520,6 +536,7 @@ Four decisions made on 9 November keep v0.1 focused on judging outcomes. The rob
 - **Wait before a weld change.** The position servos lag behind the targets by several millimetres while the arm moves. Without the wait, the weld moves the object when it switches on.
 - **Weld pose.** Compile calculates the object's pose in the hand frame from the planned grasp. Playback writes this pose to the model before the weld switches on. The check and the execution use the same value.
 - **Fail closed.** An unknown tool, a missing or unknown argument, a value that is not a number, a speed that is not positive, an unknown object or a point that the arm cannot reach causes `CompileError`. The firewall changes `CompileError` into BLOCK.
+- **Motion limit.** A motion longer than 6 s causes `CompileError`, and the message tells the caller to split the move. With this limit, the verdict depends only on the physics, not on the speed of the computer.
 - **Time.** Compile takes about 20 ms for `pick` on a laptop CPU. Playback of a 3.5 s motion takes about 70 ms.
 
 ## What to build for each step
@@ -701,6 +718,8 @@ What this gives up: no end-to-end evidence that an LLM agent re-plans and finish
 &#91;embedded content: three-week plan · build then test, 1 gate\]
 
 **Gate, Fri 20 Nov:** a scripted unsafe move is blocked, the safe version of it passes, and a check takes under 500 ms. If the gate slips, cut MODIFY repair and the MCP server from v0.1 and keep the eval.
+
+**Gate result:** passed. `python examples/gate.py` runs the gate. The robot holds the hot cup, and the firewall checks two moves at 1 m/s, 5 times each. The move to 10 cm above the hand gives BLOCK (`hot_clearance`) on all runs, in 92 ms. The move across the table gives MODIFY (slowed 3.6x) on all runs, in at most 361 ms. MODIFY repair stays in v0.1.
 
 **Release, Fri 4 Dec:** package on PyPI, README with the evaluation table, a 60-second demo video of a jailbreak being blocked, and the action dataset and its templates published under the same license.
 
