@@ -20,7 +20,7 @@ from preflight.core.trace import Trace
 from preflight.criteria import Need, Rules
 from preflight.robots import TabletopArm
 
-from .facts import REPORT_RADIUS_M, ContactFacts, Fall, Facts, Proximity, Speed, Tilt
+from .facts import REPORT_RADIUS_M, ContactFacts, Fall, Facts, Positions, Proximity, Speed, Tilt
 
 GRIPPER = "gripper"  # group: the hand, the fingers and the held object
 MIN_FALL_S = 0.05  # shorter losses of contact are bounces or contact noise, not falls
@@ -47,7 +47,7 @@ class Measure:
     def facts(self, trace: Trace, needs: Iterable[Need]) -> Facts:
         needs = set(needs)
         for need in needs:
-            if need.kind not in ("contact", "proximity", "speed", "tilt", "fall"):
+            if need.kind not in ("contact", "proximity", "speed", "tilt", "fall", "position"):
                 raise ValueError(f"unknown fact kind {need.kind!r}")
         held = self._held(trace)
         rows = np.unique(np.r_[np.arange(0, len(trace), self._sample_every), len(trace) - 1])
@@ -57,13 +57,16 @@ class Measure:
         pairs = sorted({n.tags for n in needs if n.kind == "proximity"})
         tilt_tags = sorted({n.tags[0] for n in needs if n.kind == "tilt"})
         want_speed = any(n.kind == "speed" for n in needs)
+        want_position = any(n.kind == "position" for n in needs)
 
         dist = {p: np.full(len(rows), REPORT_RADIUS_M) for p in pairs}
         near = {p: (np.full(len(rows), None, dtype=object), np.full(len(rows), None, dtype=object)) for p in pairs}
         tcp_mps, held_mps = np.zeros(len(rows)), np.full(len(rows), np.nan)
         tilt = {tag: {self._names[b]: np.zeros(len(rows)) for b in self._tags.get(tag, ())} for tag in tilt_tags}
+        points = np.zeros((len(rows), 1 + len(self._robot), 3))
+        held_xyz = np.full((len(rows), 3), np.nan)
 
-        if pairs or want_speed or tilt_tags:
+        if pairs or want_speed or tilt_tags or want_position:
             data, model = self._scratch, self.model
             for i, k in enumerate(rows):
                 trace.restore(model, data, k)
@@ -80,8 +83,16 @@ class Measure:
                 for tag in tilt_tags:
                     for b in self._tags.get(tag, ()):
                         tilt[tag][self._names[b]][i] = np.degrees(np.arccos(np.clip(data.xmat[b][8], -1, 1)))
+                if want_position:
+                    points[i, 0] = data.site_xpos[self._arm.tcp_site]
+                    points[i, 1:] = data.xpos[self._robot]
+                    if held[k] >= 0:
+                        held_xyz[i] = data.xpos[held[k]]
 
         held_names = np.array([self._names[h] if h >= 0 else None for h in held[rows]], dtype=object)
+        positions = None
+        if want_position:
+            positions = Positions(("tcp", *self._names[self._robot]), points, held_xyz, held_names)
         return Facts(
             t=trace.t[rows],
             contacts=MappingProxyType(contacts),
@@ -89,6 +100,7 @@ class Measure:
             speed=Speed(tcp_mps, held_mps, held_names) if want_speed else None,
             tilt=MappingProxyType({tag: Tilt(tag, MappingProxyType(v)) for tag, v in tilt.items()}),
             falls=MappingProxyType(falls),
+            positions=positions,
         )
 
     # --- Helpers -------------------------------------------------------------

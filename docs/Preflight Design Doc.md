@@ -224,6 +224,21 @@ def check(trace, criteria, cfg):
 
 The same trace always gets the same verdict, so jailbreaking the LLM cannot change the outcome. Users can add criteria with the same decorator. An LLM may draft a new criterion from a sentence, but a person reviews and commits the code; nothing at runtime asks a model.
 
+### Check in v0.1
+
+Each criterion's `CriterionSpec` has a `check` function from `preflight/criteria/checks.py`. A check reads facts and returns the earliest violation, or `None`. `Checker` in `preflight/core/check.py` runs the checks for one tool call and returns a `CheckResult`.
+
+- **Findings.** A `CheckResult` has the earliest violation of each criterion, in time order. Each finding has an action from `on_violation`: `block`, `modify` or `warn`. A violation gives the criterion, the time, the measured value, the limit, the bodies and a message.
+- **Checks in v0.1.** `no_human_strike`, `slow_near_human`, `workspace`, `sharp_clearance`, `hot_clearance`, `no_fragile_drop` and `no_spill`.
+- **Not checked yet.** `no_human_pinch`, `robot_limits`, `hazard_allowlist`, `no_side_effects`, and the replacements `pour_into_receptacle` and `safe_handover`. `CheckResult.unchecked` gives each one with a reason. A criterion that cannot be checked never passes silently.
+  - `no_human_pinch`: the static human is fixed to the world, so a pinch shows only as contact force. `no_human_strike` checks that force.
+  - `robot_limits`: this check needs actuator forces in the trace.
+- **Clearance (option A).** If the distance at the start is at or above the limit, a violation is a distance below the limit. If the distance at the start is already below the limit, a violation is a distance more than 5 mm below the start distance. Check uses the smallest distance of the whole tag group, so it does not see a second object of the tag that comes closer while the first object stays nearer.
+- **Exemptions.** The tool's exemption relaxes the criterion for the exemption's bodies, and its replacements run with action `block`. If a replacement has no check, Check does not apply the exemption, and the original criterion stays fully active.
+- **Fail closed.** A check that raises an exception gives a `block` finding with the error in the message.
+- **Gate case.** The robot holds the hot cup. A move to 10 cm above the hand at 1 m/s gives `hot_clearance` (block) at t = 0.14 s, before the contact, and `no_human_strike` (block) at t = 0.69 s. A move away from the person at 0.2 m/s gives no findings. The same move at 0.5 m/s gives only `slow_near_human` (modify).
+- **Time.** A check takes less than 1 ms.
+
 ## Simulation lookahead
 
 **The firewall checks the exact trajectory it will execute, starting from the current world state, and keeps simulating after the motion ends to catch delayed consequences.**
@@ -457,9 +472,9 @@ Configurations compared: no guard (every harmful data point causes harm by defin
 
 ```text
 preflight/
-  core/        firewall.py  verdict.py  trace.py
+  core/        firewall.py  verdict.py  trace.py  check.py
   measure/     facts.py  measure.py
-  criteria/    schema.py (pydantic)  catalogue.py  exemptions.py  registry.py  loader.py
+  criteria/    schema.py (pydantic)  catalogue.py  checks.py  exemptions.py  registry.py  loader.py
   backends/    mujoco_backend.py (fork, rollout, fail closed, execute)
   robots/      tabletop_arm.py (primitives, IK, playback)  trajectory.py (speed profile, retiming)
   adapters/    anthropic.py  openai.py  mcp_server.py
@@ -709,6 +724,7 @@ Open questions:
 - [ ] Should the agent's system prompt say it is guarded, or should the firewall stay invisible?
 - [x] The kitchen scene starts with clearance violations: the hot cup is 22 cm and the knife is 19 cm from the left hand, and both limits are 30 cm. Should Check judge only what the action makes worse, should the scene change, or should the limits change? Check judges only what the action makes worse. A clearance violation counts only if the action moves the distance below the limit, or makes it smaller than it was at the start. The scene and the limits do not change.
 - [ ] Should the person's contact stiffness come from body-region data (ISO/TS 15066 gives stiffness values)? It sets the measured strike forces.
+- [x] How should the time budget work for long motions? The physics alone needs about 230 ms for 10.8 s of simulated time. A slow motion can pass the 400 ms rollout budget, and then the result depends on the speed of the computer. The same action can be blocked on one run and allowed on the next. `compile()` refuses a motion longer than 6 s with `CompileError`, and tells the caller to split the move. The wall-clock timeout stays only as a backstop for broken physics, at 2 s. The verdict then depends only on the physics.
 - [x] Static human for v0.1, or a scripted moving hand from the start? Static human: `scenes/kitchen.xml` freezes the humanoid in one pose.
 
 ## Sources

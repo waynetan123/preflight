@@ -1,4 +1,4 @@
-"""The firewall core: traces, verdicts and the check loop."""
+"""The firewall core: traces, checks and verdicts."""
 
 from .trace import Contacts, Trace, TraceRecorder
 

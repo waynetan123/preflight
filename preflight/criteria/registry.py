@@ -6,6 +6,7 @@ criteria and the tags they read, but it cannot replace a criterion that is alrea
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -39,10 +40,11 @@ class Need:
         speed       speed of the TCP and of the held object
         tilt        angle from upright of each body of tags[0]
         fall        drops of each body of tags[0]: height and impact speed
+        position    positions of the TCP, the robot bodies and the held object
     A group is a tag from the rules file, or "gripper": the hand, the fingers and the held object.
     """
 
-    kind: Literal["contact", "proximity", "speed", "tilt", "fall"]
+    kind: Literal["contact", "proximity", "speed", "tilt", "fall", "position"]
     tags: tuple[str, ...] = ()
 
 
@@ -59,6 +61,8 @@ class CriterionSpec:
     replacement: bool = False
     # Facts the criterion reads. Empty means Measure does not supply its facts yet.
     needs: tuple[Need, ...] = ()
+    # check(facts, params, context) -> Violation | None. None here means the criterion cannot be checked yet.
+    check: Callable | None = None
 
 
 class Registry:

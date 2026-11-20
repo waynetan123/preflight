@@ -43,6 +43,16 @@ class Speed:
 
 
 @dataclass(frozen=True)
+class Positions:
+    """World positions of the robot's points and of the held object, at each sample."""
+
+    names: tuple[str, ...]  # "tcp", then the robot body names
+    xyz: np.ndarray  # (S, len(names), 3)
+    held_xyz: np.ndarray  # (S, 3) origin of the held object; NaN when the gripper holds nothing
+    held: np.ndarray  # (S,) held body name, or None
+
+
+@dataclass(frozen=True)
 class Tilt:
     """Angle between each body's z axis and the world's z axis, at each sample."""
 
@@ -69,3 +79,4 @@ class Facts:
     speed: Speed | None
     tilt: Mapping[str, Tilt]  # tag -> tilt
     falls: Mapping[str, tuple[Fall, ...]]  # tag -> falls
+    positions: Positions | None = None
