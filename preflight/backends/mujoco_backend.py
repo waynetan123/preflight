@@ -36,6 +36,9 @@ INSTABILITY_WARNINGS = (
     mujoco.mjtWarning.mjWARN_CNSTRFULL,
 )
 BUDGET_CHECK_STEPS = 25  # how often the rollout reads the clock
+# A backstop for broken physics, not a performance limit: compile() caps the motion at 6 s, which a normal
+# rollout finishes in about 300 ms. The verdict must depend on the physics, not on the computer's speed.
+ROLLOUT_BUDGET_S = 2.0
 
 
 class RolloutFailure(Exception):
@@ -73,7 +76,7 @@ class MujocoBackend:
         return self._scratch
 
     def rollout(self, arm: TabletopArm, trajectory: Trajectory, settle_s: float = 1.0,
-                budget_s: float = 0.4) -> Rollout:
+                budget_s: float = ROLLOUT_BUDGET_S) -> Rollout:
         """Run the trajectory and `settle_s` more seconds on a fork of the live state, and record it."""
         start = time.perf_counter()
         data = self.fork()

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from preflight.robots import CompileError, TabletopArm, trapezoid
-from preflight.robots.tabletop_arm import HOVER_M, JOINT_SPEED_LIMITS, MAX_SPEED_MPS
+from preflight.robots.tabletop_arm import HOVER_M, JOINT_SPEED_LIMITS, MAX_MOTION_S, MAX_SPEED_MPS
 
 ROOT = Path(__file__).resolve().parent.parent
 SCENE = ROOT / "scenes" / "kitchen.xml"
@@ -104,6 +104,13 @@ def test_unreachable_point(arm, data):
     # The target comes first, then the point where the path leaves the reach.
     assert str(exc.value).startswith("move_to: the arm cannot reach [2.0, 0.0, 1.0] with the gripper down; "
                                      "the path leaves the reach at [")
+
+
+def test_motion_longer_than_the_limit(arm, data):
+    # 0.9 m at 0.1 m/s takes about 9 s.
+    with pytest.raises(CompileError, match=r"move_to: the motion takes \d+\.\d s, more than the 6 s limit"):
+        arm.compile(data, "move_to", {"xyz": [0.30, -0.45, 0.90], "speed": 0.1})
+    assert arm.compile(data, "move_to", {"xyz": [0.30, -0.45, 0.90], "speed": 0.5}).duration <= MAX_MOTION_S
 
 
 @pytest.mark.parametrize("tool, args, message", [
