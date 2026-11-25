@@ -90,6 +90,19 @@ class RobotHealth:
 
 
 @dataclass(frozen=True)
+class Diff:
+    """How far each free object is from where it started, at each sample.
+
+    The distance is the largest movement of any corner of the object's bounding box, so a turn in place
+    counts as well as a shift. v0.1 has no discrete state (appliances, doors), so positions are the diff.
+    """
+
+    names: tuple[str, ...]  # bodies with a free joint that are not part of the robot
+    dist_m: np.ndarray  # (S, len(names)); row 0 is the start, so it is 0
+    held: frozenset[str]  # objects the gripper holds at some time in the rollout
+
+
+@dataclass(frozen=True)
 class Facts:
     t: np.ndarray  # (S,) sample times for Proximity, Speed and Tilt
     contacts: Mapping[str, ContactFacts]  # tag -> contacts
@@ -99,3 +112,4 @@ class Facts:
     falls: Mapping[str, tuple[Fall, ...]]  # tag -> falls
     positions: Positions | None = None
     robot: RobotHealth | None = None
+    diff: Diff | None = None

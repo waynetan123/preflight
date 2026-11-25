@@ -6,6 +6,7 @@
 
 Contacts, falls and robot health use every physics step. Proximity, speed and tilt use every `sample_every`-th
 step (default 5: every 10 ms) and the last step, because each sample restores the state and runs MuJoCo.
+The diff uses the same samples, but reads the poses of free objects directly from qpos.
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ from preflight.core.trace import Trace
 from preflight.criteria import Need, Rules
 from preflight.robots import TabletopArm
 
-from .facts import REPORT_RADIUS_M, ContactFacts, Fall, Facts, Positions, Proximity, RobotHealth, Speed, Tilt
+from .facts import (
+    REPORT_RADIUS_M, ContactFacts, Diff, Fall, Facts, Positions, Proximity, RobotHealth, Speed, Tilt,
+)
 
 GRIPPER = "gripper"  # group: the hand, the fingers and the held object
 MIN_FALL_S = 0.05  # shorter losses of contact are bounces or contact noise, not falls
@@ -45,6 +48,9 @@ class Measure:
         self._arm_joints = np.flatnonzero(arm_body & (model.jnt_limited != 0))
         self._arm_actuators = np.flatnonzero((model.actuator_trntype == mujoco.mjtTrn.mjTRN_JOINT)
                                              & np.isin(model.actuator_trnid[:, 0], self._arm_joints))
+        # Free objects for the diff: (body, qpos address, corners of its geoms' bounding boxes in the body frame).
+        self._objects = [(b, model.jnt_qposadr[model.body_jntadr[b]], _corners(model, self._geoms[b]))
+                         for b in range(model.nbody) if b not in arm.bodies and _is_free(model, b)]
         self._scratch = mujoco.MjData(model)
         self._fromto = np.zeros(6)
         self._vel = np.zeros(6)
@@ -52,13 +58,14 @@ class Measure:
     def facts(self, trace: Trace, needs: Iterable[Need]) -> Facts:
         needs = set(needs)
         for need in needs:
-            if need.kind not in ("contact", "proximity", "speed", "tilt", "fall", "position", "robot"):
+            if need.kind not in ("contact", "proximity", "speed", "tilt", "fall", "position", "robot", "diff"):
                 raise ValueError(f"unknown fact kind {need.kind!r}")
         held = self._held(trace)
         rows = np.unique(np.r_[np.arange(0, len(trace), self._sample_every), len(trace) - 1])
 
         contacts = {n.tags[0]: self._contacts(trace, held, n.tags[0]) for n in needs if n.kind == "contact"}
         falls = {n.tags[0]: self._falls(trace, held, n.tags[0]) for n in needs if n.kind == "fall"}
+        diff = self._diff(trace, held, rows) if any(n.kind == "diff" for n in needs) else None
         pairs = sorted({n.tags for n in needs if n.kind == "proximity"})
         tilt_tags = sorted({n.tags[0] for n in needs if n.kind == "tilt"})
         want_speed = any(n.kind == "speed" for n in needs)
@@ -107,6 +114,7 @@ class Measure:
             falls=MappingProxyType(falls),
             positions=positions,
             robot=self._robot_health(trace) if any(n.kind == "robot" for n in needs) else None,
+            diff=diff,
         )
 
     # --- Helpers -------------------------------------------------------------
@@ -216,3 +224,38 @@ class Measure:
                         impact_mps=float(speed[end - 1]) if landed else None,
                     ))
         return tuple(falls)
+
+    def _diff(self, trace: Trace, held: np.ndarray, rows: np.ndarray) -> Diff:
+        qpos = trace.qpos[rows]
+        dist = np.zeros((len(rows), len(self._objects)))
+        for j, (_, qadr, corners) in enumerate(self._objects):
+            points = _rotate(qpos[:, qadr + 3:qadr + 7], corners) + qpos[:, None, qadr:qadr + 3]  # (S, P, 3)
+            dist[:, j] = np.linalg.norm(points - points[0], axis=2).max(axis=1)
+        names = tuple(self._names[b] for b, _, _ in self._objects)
+        return Diff(names, dist, frozenset(self._names[b] for b in np.unique(held[held >= 0])))
+
+
+def _is_free(model: mujoco.MjModel, body: int) -> bool:
+    joint = model.body_jntadr[body]
+    return joint >= 0 and model.jnt_type[joint] == mujoco.mjtJoint.mjJNT_FREE
+
+
+def _corners(model: mujoco.MjModel, geoms: np.ndarray) -> np.ndarray:
+    """The 8 corners of each geom's bounding box, in the body frame. The body origin if it has no geoms."""
+    if not len(geoms):
+        return np.zeros((1, 3))
+    signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+    corners, rot = [], np.zeros(9)
+    for g in geoms:
+        mujoco.mju_quat2Mat(rot, model.geom_quat[g])
+        box = model.geom_aabb[g, :3] + signs * model.geom_aabb[g, 3:]  # in the geom frame
+        corners.append(model.geom_pos[g] + box @ rot.reshape(3, 3).T)
+    return np.concatenate(corners)
+
+
+def _rotate(quat: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Rotate body-frame points by each quaternion (w x y z): (S, 4) and (P, 3) give (S, P, 3)."""
+    quat = quat / np.linalg.norm(quat, axis=1, keepdims=True)
+    w, u = quat[:, None, :1], quat[:, None, 1:]
+    t = 2 * np.cross(u, points[None])
+    return points[None] + w * t + np.cross(u, t)

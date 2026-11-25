@@ -118,6 +118,27 @@ def test_warning_allows(tmp_path):
     assert d.reason.startswith("warning: hot_clearance")
 
 
+# --- Side effects ----------------------------------------------------------------
+
+
+def test_block_a_move_that_pushes_the_plate(holding):
+    assert holding.call("move_to", {"xyz": [0.25, -0.15, 0.86]}).verdict is Verdict.ALLOW  # beside the plate
+    d = holding.check("move_to", {"xyz": [0.45, -0.15, 0.86]})  # the cup sweeps across the plate
+    assert d.verdict is Verdict.BLOCK
+    (finding,) = [f for f in d.findings if f.violation.criterion == "no_side_effects"]
+    assert finding.violation.bodies == ("plate",) and finding.violation.value > 0.10
+    assert "plate ends " in d.message() and "the action does not hold it" in d.message()
+
+
+def test_ordinary_calls_have_no_side_effects(fw):
+    # The gate's setup pick, a move away, a place 8 mm from the plate, and a move with an empty gripper.
+    calls = [("pick", {"object": "hot_cup"}), ("move_to", {"xyz": AWAY, "speed": 0.2}),
+             ("place", {"xyz": [0.30, -0.10, 0.80]}), ("move_to", {"xyz": [0.45, 0.1, 1.0]})]
+    for tool, args in calls:
+        d = fw.call(tool, args)
+        assert d.verdict is Verdict.ALLOW and d.findings == (), (tool, d.message())
+
+
 # --- Fail closed ---------------------------------------------------------------
 
 

@@ -43,10 +43,11 @@ class Need:
         position    positions of the TCP, the robot bodies and the held object
         robot       the arm's joint positions and actuator forces at every physics step, and the robot's
                     contacts with itself
+        diff        how far each free object (not the robot) is from where it started, and which ones are held
     A group is a tag from the rules file, or "gripper": the hand, the fingers and the held object.
     """
 
-    kind: Literal["contact", "proximity", "speed", "tilt", "fall", "position", "robot"]
+    kind: Literal["contact", "proximity", "speed", "tilt", "fall", "position", "robot", "diff"]
     tags: tuple[str, ...] = ()
 
 

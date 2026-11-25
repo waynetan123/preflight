@@ -1,5 +1,6 @@
 """Measure turns a trace into correct facts, and computes only the facts that are needed."""
 
+import dataclasses
 import itertools
 import math
 import time
@@ -24,6 +25,7 @@ GRIPPER_TO_HUMAN = Need("proximity", ("gripper", "human"))
 HUMAN_CONTACT = Need("contact", ("human",))
 SPEED = Need("speed")
 ROBOT = Need("robot")
+DIFF = Need("diff")
 
 
 @pytest.fixture
@@ -58,7 +60,7 @@ def _over_hand(sim, height):
 def test_kitchen_needs():
     needs = REGISTRY.needs(RULES.params)
     assert {HUMAN_CONTACT, SPEED, GRIPPER_TO_HUMAN, HOT_TO_HUMAN, Need("proximity", ("sharp", "human")),
-            Need("tilt", ("liquid",)), Need("fall", ("fragile",)), Need("position"), ROBOT} == needs
+            Need("tilt", ("liquid",)), Need("fall", ("fragile",)), Need("position"), ROBOT, DIFF} == needs
 
 
 def test_only_needed_facts_are_computed(sim, arm, measure):
@@ -246,6 +248,97 @@ def test_folding_the_hand_onto_the_arm_is_a_self_collision(sim, arm, measure):
     contacts = measure.facts(rollout.trace, {ROBOT}).robot.self_contacts
     assert set(zip(contacts.robot_body, contacts.other_body)) == {("panda/link5", "panda/hand")}
     assert contacts.force_n.max() > 10
+
+
+# --- Diff --------------------------------------------------------------------------
+
+
+def _moved(facts, body):
+    """How far `body` is from its start at the end of the rollout."""
+    return facts.diff.dist_m[-1, facts.diff.names.index(body)]
+
+
+def _sweep_knife(sim, arm, measure):
+    """The open gripper moves in beside the knife, low over the table, then sweeps across it."""
+    sim.execute(arm, arm.compile(sim.live, "move_to", {"xyz": [0.5, -0.03, 0.765]}))
+    return _facts(sim, arm, measure, "move_to", {"xyz": [0.5, 0.20, 0.765]}, {DIFF})
+
+
+def _push_plate(sim, arm, measure, z=0.86):
+    """The held hot cup moves in beside the plate, then across the plate's place at height z."""
+    sim.execute(arm, arm.compile(sim.live, "pick", {"object": "hot_cup"}))
+    sim.execute(arm, arm.compile(sim.live, "move_to", {"xyz": [0.25, -0.15, 0.86]}))
+    return _facts(sim, arm, measure, "move_to", {"xyz": [0.45, -0.15, z]}, {DIFF})
+
+
+def test_diff_objects_are_the_free_bodies(sim, arm, measure):
+    facts, _ = _facts(sim, arm, measure, "move_to", {"xyz": [0.45, 0.1, 1.0]}, {DIFF})
+    assert set(facts.diff.names) == {"hot_cup", "knife", "plate"}  # not the table, the sink or the person
+    assert facts.diff.dist_m.shape == (len(facts.t), 3)
+    assert (facts.diff.dist_m[0] == 0).all()
+
+
+def test_objects_at_rest_do_not_drift(sim, arm, measure):
+    facts, _ = _facts(sim, arm, measure, "move_to", {"xyz": [0.45, 0.1, 1.0]}, {DIFF})
+    assert facts.diff.dist_m.max() < 1e-3  # settle noise is far below the 2 cm tolerance
+    assert facts.diff.held == frozenset()
+
+
+def test_sweep_moves_the_knife(sim, arm, measure):
+    facts, _ = _sweep_knife(sim, arm, measure)
+    assert _moved(facts, "knife") > 0.05
+    assert _moved(facts, "plate") < 1e-3 and _moved(facts, "hot_cup") < 1e-3
+    assert facts.diff.held == frozenset()
+
+
+def test_diff_matches_mujoco(sim, arm, measure):
+    # The knife turns as well as moves: compare with the geom corners that MuJoCo computes.
+    facts, rollout = _sweep_knife(sim, arm, measure)
+    model, data = sim.model, mujoco.MjData(sim.model)
+    geoms = [model.geom("knife_handle").id, model.geom("knife_blade").id]
+    signs = np.array(list(itertools.product((-1, 1), repeat=3)))
+
+    def corners(step):
+        rollout.trace.restore(model, data, step)
+        return np.concatenate([data.geom_xpos[g] + (model.geom_aabb[g, :3] + signs * model.geom_aabb[g, 3:])
+                               @ data.geom_xmat[g].reshape(3, 3).T for g in geoms])
+
+    start, end = corners(0), corners(len(rollout.trace) - 1)
+    assert _moved(facts, "knife") == pytest.approx(np.linalg.norm(end - start, axis=1).max(), abs=1e-6)
+
+
+def test_turn_in_place_counts(sim, arm, measure):
+    rollout = sim.rollout(arm, arm.compile(sim.live, "move_to", {"xyz": [0.45, 0.1, 1.0]}))
+    qpos = rollout.trace.qpos.copy()
+    qadr = sim.model.jnt_qposadr[sim.model.body("knife").jntadr[0]]
+    qpos[-1, qadr + 3:qadr + 7] = [math.cos(math.pi / 4), 0, 0, math.sin(math.pi / 4)]  # 90 deg about z
+    facts = measure.facts(dataclasses.replace(rollout.trace, qpos=qpos), {DIFF})
+    # The origin stays; the blade tip, 12 cm from it, moves about 12 * sqrt(2) cm.
+    assert _moved(facts, "knife") == pytest.approx(0.17, abs=0.01)
+
+
+def test_held_cup_pushes_the_plate(sim, arm, measure):
+    facts, _ = _push_plate(sim, arm, measure)
+    assert _moved(facts, "plate") > 0.10
+    assert _moved(facts, "knife") < 1e-3
+    assert facts.diff.held == {"hot_cup"}
+
+
+def test_held_cup_over_the_plate_does_not_move_it(sim, arm, measure):
+    facts, _ = _push_plate(sim, arm, measure, z=0.90)  # the bottom of the cup passes 3 cm above the plate
+    assert _moved(facts, "plate") < 1e-3
+
+
+def test_pick_and_place_move_only_the_held_object(sim, arm, measure):
+    facts, _ = _facts(sim, arm, measure, "pick", {"object": "hot_cup"}, {DIFF})
+    assert facts.diff.held == {"hot_cup"}
+    assert _moved(facts, "hot_cup") > 0.05
+    assert _moved(facts, "knife") < 1e-3 and _moved(facts, "plate") < 1e-3
+
+    sim.execute(arm, arm.compile(sim.live, "pick", {"object": "hot_cup"}))
+    facts, _ = _facts(sim, arm, measure, "place", {"xyz": [0.30, -0.10, 0.80]}, {DIFF})  # 8 mm from the plate
+    assert facts.diff.held == {"hot_cup"}
+    assert _moved(facts, "knife") < 1e-3 and _moved(facts, "plate") < 1e-3
 
 
 # --- Speed of Measure -------------------------------------------------------------

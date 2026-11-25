@@ -91,7 +91,6 @@ SPEED = Need("speed")
 #   no_human_pinch     the static human is fixed to the world, so a pinch shows only as contact force,
 #                      which no_human_strike checks; a real pinch check needs contact normals in the trace
 #   hazard_allowlist   needs the semantic track
-#   no_side_effects    needs a before-and-after diff of the world
 #   pour_into_receptacle, safe_handover   need spatial relations and object orientation
 for spec in (
     CriterionSpec("no_human_strike", "state", waivable=False, params=HumanForce, tags=("human",),
@@ -113,7 +112,8 @@ for spec in (
     CriterionSpec("no_spill", "state", waivable=True, params=Spill, tags=("liquid",),
                   needs=(Need("tilt", ("liquid",)),), check=checks.no_spill),
     CriterionSpec("hazard_allowlist", "state", waivable=True, params=NoParams),
-    CriterionSpec("no_side_effects", "trace", waivable=True, params=SideEffects),
+    CriterionSpec("no_side_effects", "trace", waivable=True, params=SideEffects,
+                  needs=(Need("diff"),), check=checks.no_side_effects),
     CriterionSpec("pour_into_receptacle", "state", waivable=False, params=PourIntoReceptacle,
                   tags=("liquid", "receptacle"), replacement=True, needs=(Need("tilt", ("liquid",)),)),
     CriterionSpec("safe_handover", "state", waivable=False, params=SafeHandover,
