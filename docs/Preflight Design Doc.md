@@ -229,14 +229,32 @@ The same trace always gets the same verdict, so jailbreaking the LLM cannot chan
 Each criterion's `CriterionSpec` has a `check` function from `preflight/criteria/checks.py`. A check reads facts and returns the earliest violation, or `None`. `Checker` in `preflight/core/check.py` runs the checks for one tool call and returns a `CheckResult`.
 
 - **Findings.** A `CheckResult` has the earliest violation of each criterion, in time order. Each finding has an action from `on_violation`: `block`, `modify` or `warn`. A violation gives the criterion, the time, the measured value, the limit, the bodies and a message.
-- **Checks in v0.1.** `no_human_strike`, `slow_near_human`, `workspace`, `sharp_clearance`, `hot_clearance`, `no_fragile_drop` and `no_spill`.
-- **Not checked yet.** `no_human_pinch`, `robot_limits`, `hazard_allowlist`, `no_side_effects`, and the replacements `pour_into_receptacle` and `safe_handover`. `CheckResult.unchecked` gives each one with a reason. A criterion that cannot be checked never passes silently.
-  - `no_human_pinch`: the static human is fixed to the world, so a pinch shows only as contact force. `no_human_strike` checks that force.
-  - `robot_limits`: this check needs actuator forces in the trace.
+- **Checks in v0.1.** `no_human_strike`, `no_human_pinch`, `slow_near_human`, `workspace`, `robot_limits`, `sharp_clearance`, `hot_clearance`, `no_fragile_drop`, `no_spill` and `no_side_effects`.
+- **Not checked yet.** `hazard_allowlist`, and the replacements `pour_into_receptacle` and `safe_handover`. `CheckResult.unchecked` gives each one with a reason. A criterion that cannot be checked never passes silently.
+  - `hazard_allowlist`: this check needs the semantic track: object labels, hazard zones and appliance state. The kitchen has no appliance.
+  - `pour_into_receptacle` and `safe_handover`: these checks run only inside the exemptions of the `pour` and `hand_over` tools. The arm has neither tool, and its gripper always points down.
+- **Pinch.** MuJoCo makes no contact between two bodies that are fixed to the world. Thus the hand and the table never touch, and the "two opposing contacts" rule cannot see a hand pinched against the table. In v0.1, a robot contact on a human body that is fixed to the world is a clamp, because the body cannot move away.
+  - Check adds the forces of all robot contacts on the body at each step. A violation is a force above the pinch limit of the region for at least 0.5 s (quasi-static contact, ISO/TS 15066).
+  - A force above the limit at the end of the rollout is also a violation, because the robot then holds its last pose.
+  - The pinch limits are placeholders at half the strike limits: hand 25 N, torso 20 N, head 0 N. A shorter contact is transient, and `no_human_strike` judges it.
+  - Check ignores a body that is not fixed, such as a mocap hand. A movable human needs the contact normals in the trace.
+- **Robot limits.** `robot_limits` reads the arm and gives the earliest of three violations. The check ignores the gripper. The fingers rest at the open end of their range, and the gripper actuator stays far below its force limit.
+  - A joint comes within `joint_margin_rad` (placeholder 1 mrad) of the end of its range.
+  - An actuator stays at its force limit for more than `max_saturated_s` (placeholder 0.05 s). MuJoCo clamps the actuator force to its force range, so the force can never be above the limit. The check measures the time at the limit. A saturation that starts in the first row can last 0.5 s more, because the arm can still move from the previous call.
+  - Two robot bodies touch. A contact between the two fingers does not count.
+- **Side effects.** `no_side_effects` compares the end of the rollout, after the settle time, with the start. Each object that the action does not hold must end within `tolerance_m` (2 cm) of its start.
+  - The objects that the gripper holds at some time in the rollout are the objects that the tool declares it moves. Measure gets them from the grasp welds, so a new tool needs no change. A tool cannot declare an object that it moves without a grasp.
+  - The distance is the largest distance that a corner of the object's bounding box moves, so a turn counts as well as a shift.
+  - The time of a violation is the start of the lasting change. If the robot pushes an object but the object comes back within the tolerance, there is no violation.
+  - A rules file cannot exempt this criterion yet, because the loader accepts an exemption only for a tag that the criterion reads.
 - **Clearance (option A).** If the distance at the start is at or above the limit, a violation is a distance below the limit. If the distance at the start is already below the limit, a violation is a distance more than 5 mm below the start distance. Check uses the smallest distance of the whole tag group, so it does not see a second object of the tag that comes closer while the first object stays nearer.
 - **Exemptions.** The tool's exemption relaxes the criterion for the exemption's bodies, and its replacements run with action `block`. If a replacement has no check, Check does not apply the exemption, and the original criterion stays fully active.
 - **Fail closed.** A check that raises an exception gives a `block` finding with the error in the message.
-- **Gate case.** The robot holds the hot cup. A move to 10 cm above the hand at 1 m/s gives `hot_clearance` (block) at t = 0.14 s, before the contact, and `no_human_strike` (block) at t = 0.69 s. A move away from the person at 0.2 m/s gives no findings. The same move at 0.5 m/s gives only `slow_near_human` (modify).
+- **Gate case.** The robot holds the hot cup. A move to 10 cm above the hand at 1 m/s gives `hot_clearance` (block) at t = 0.14 s, before the contact. At t = 0.69 s it also gives `no_human_strike` (97 N) and `no_human_pinch` (up to 151 N). At the same time, `robot_limits` finds actuator 6 at its limit for 1.21 s. A move away from the person at 0.2 m/s gives no findings. The same move at 0.5 m/s gives only `slow_near_human` (modify).
+- **New cases.** Each case gives only the named criterion (block).
+  - `no_human_pinch`: the arm lowers the open gripper at 0.1 m/s onto the resting hand, 2 cm and 3 cm from its centre. The left finger presses the hand with up to 46 N for 1.15 s. Each contact stays below the 50 N strike limit.
+  - `robot_limits`: a move of the TCP to the table top at (0.35, 0.0, 0.75) pushes the fingertips into the table. Actuator 2 stays at its 87 N m limit for 0.95 s.
+  - `no_side_effects`: the held hot cup sweeps across the place of the plate at z = 0.86 m. The plate ends 18.3 cm from its start.
 - **Time.** A check takes less than 1 ms.
 
 ## Simulation lookahead
@@ -314,16 +332,21 @@ Contacts cost nothing extra because MuJoCo computes them every step. Proximity i
 
 | Need | What Measure gives | Rows |
 | --- | --- | --- |
-| `contact`, tag | Each contact between the robot (or the held object) and a body with the tag: time, both bodies, normal force | Every physics step |
+| `contact`, tag | Each contact between the robot (or the held object) and a body with the tag: time, both bodies, normal force, and if the tag body is fixed to the world (`body_weldid == 0`). The facts also give the physics timestep. | Every physics step |
 | `proximity`, two groups | The smallest distance between the groups, and the two nearest bodies. A group is a tag or `gripper` (the hand, the fingers and the held object). | Every 5th step (10 ms) and the last step |
 | `speed` | The speed of the TCP and of the held object | Every 5th step |
 | `tilt`, tag | The angle from upright of each body with the tag | Every 5th step |
 | `fall`, tag | Each drop of a body with the tag: release time, impact time, drop height, impact speed | Every physics step |
+| `position` | The positions of the TCP, the robot bodies and the held object | Every 5th step |
+| `robot` | The arm's joint positions and ranges, the arm's actuator forces and force ranges, and each contact between two robot bodies, except between the fingers | Every physics step |
+| `diff` | For each free object that is not part of the robot: the distance from its start (the largest movement of a bounding-box corner), and the objects that the gripper holds at some time | Every 5th step, read from qpos |
 
 - **Fast distances.** Bounding spheres give a lower limit for each geom pair. Measure tests the pairs in the sequence of this limit and stops when the limit is more than the best distance. A test compares the result with a test of all pairs.
 - **Falls.** A fall starts when a body has no contact and no grasp, and ends at the next contact. A loss of contact shorter than 0.05 s, or a drop smaller than 2 cm, is not a fall.
-- **Not yet supplied.** The facts for `workspace`, `robot_limits`, `hazard_allowlist` and `no_side_effects` are not in Measure yet. These criteria declare no needs.
-- **Time.** On a laptop CPU, compile, rollout and Measure together take about 90 ms for a short `move_to`. They take 266 ms for `pick` from the home pose (5.4 s simulated).
+- **Actuator forces.** The trace records `actuator_force` at every physics step. After `mj_step`, the forces in `MjData` belong to the state before the step. Thus the recorder gives them to the previous row, as it does for contacts.
+- **Diff.** The objects are the bodies with a free joint that are not part of the robot: in the kitchen, `hot_cup`, `knife` and `plate`. v0.1 has no discrete state (no appliances), so positions are the whole diff. Objects at rest move less than 0.05 mm in a rollout.
+- **Not yet supplied.** The facts for `hazard_allowlist` are not in Measure yet. This criterion declares no needs.
+- **Time.** On a laptop CPU, compile, rollout and Measure together take about 90 ms for a short `move_to`. They take 266 ms for `pick` from the home pose (5.4 s simulated). The `robot` and `diff` facts add less than 1 ms each to Measure, because they read recorded arrays and do not restore states. The copy of the actuator forces adds about 3.5 ms to a rollout.
 
 **Stiff contacts for rigid objects.** MuJoCo's default contact time constant (`solref` 0.02 s) is soft. With it, a drop of 0.2 m put a plate 13 mm into the table, and the rollout failed with `penetration`. `scenes/build_kitchen.py` now gives the floor, the table, the sink and the props a time constant of 0.004 s (2 × the timestep). The overlap for the same drop is now about 2 mm. The person and the robot keep their values, because their stiffness controls the measured strike forces. This change raised the peak force of the hot cup on the hand from 117 N to 156 N in the same test.
 
@@ -536,6 +559,7 @@ Four decisions made on 9 November keep v0.1 focused on judging outcomes. The rob
 - **Wait before a weld change.** The position servos lag behind the targets by several millimetres while the arm moves. Without the wait, the weld moves the object when it switches on.
 - **Weld pose.** Compile calculates the object's pose in the hand frame from the planned grasp. Playback writes this pose to the model before the weld switches on. The check and the execution use the same value.
 - **Fail closed.** An unknown tool, a missing or unknown argument, a value that is not a number, a speed that is not positive, an unknown object or a point that the arm cannot reach causes `CompileError`. The firewall changes `CompileError` into BLOCK.
+- **Joint margin.** IK keeps each joint 10 mrad inside its range (`IK_JOINT_MARGIN_RAD`). Without the margin, IK put joints exactly on their stops, and `robot_limits` then blocked the motion that the planner made. In 40 random moves near the base with the cup held, the joint-stop blocks went from 16 to 0. A target that the arm can reach only within 10 mrad of a stop causes `CompileError`.
 - **Motion limit.** A motion longer than 6 s causes `CompileError`, and the message tells the caller to split the move. With this limit, the verdict depends only on the physics, not on the speed of the computer.
 - **Time.** Compile takes about 20 ms for `pick` on a laptop CPU. Playback of a 3.5 s motion takes about 70 ms.
 
@@ -745,6 +769,9 @@ Open questions:
 - [ ] Should the person's contact stiffness come from body-region data (ISO/TS 15066 gives stiffness values)? It sets the measured strike forces.
 - [x] How should the time budget work for long motions? The physics alone needs about 230 ms for 10.8 s of simulated time. A slow motion can pass the 400 ms rollout budget, and then the result depends on the speed of the computer. The same action can be blocked on one run and allowed on the next. `compile()` refuses a motion longer than 6 s with `CompileError`, and tells the caller to split the move. The wall-clock timeout stays only as a backstop for broken physics, at 2 s. The verdict then depends only on the physics.
 - [x] Static human for v0.1, or a scripted moving hand from the start? Static human: `scenes/kitchen.xml` freezes the humanoid in one pose.
+- [ ] Which duration rule does `no_human_pinch` use? Now, the force must stay above the limit for 0.5 s. Another reading of ISO/TS 15066 is stricter: a contact longer than 0.5 s must keep its peak below the limit. With the current rule, a palm on the forearm for more than 0.5 s, with a peak of 49.6 N, passes. The force stayed above 25 N for only 0.458 s.
+- [ ] How can a rules file exempt `no_side_effects`? The loader accepts an exemption only for a tag that the criterion reads, and `no_side_effects` reads no tags.
+- [ ] Where do the ISO/TS 15066 values for pinch come from? The factor of 2 between transient and quasi-static limits, and the 0.5 s, come from one secondary source ([arXiv 2203.02706](https://arxiv.org/pdf/2203.02706)), not from the standard.
 
 ## Sources
 
