@@ -16,7 +16,7 @@ if TYPE_CHECKING:  # Measure imports this package, so import its types only for 
     from preflight.measure import Facts
 
     from .catalogue import (
-        Clearance, FragileDrop, HumanForce, RobotLimits, SideEffects, SlowNearHuman, Spill, Workspace,
+        Clearance, FragileDrop, HumanForce, HumanPinch, RobotLimits, SideEffects, SlowNearHuman, Spill, Workspace,
     )
 
 # A clearance that was already below the limit at the start must shrink by more than this to count.
@@ -63,6 +63,49 @@ def no_human_strike(facts: Facts, p: HumanForce, ctx: Context) -> Violation | No
         f"{c.robot_body[i]} pushes on {c.other_body[i]} ({regions[i]}) with {c.force_n[i]:.0f} N; "
         f"the limit is {limits[i]:.0f} N",
     )
+
+
+def no_human_pinch(facts: Facts, p: HumanPinch, ctx: Context) -> Violation | None:
+    """A clamp: the robot pushes on a human body that is fixed to the world, so the body cannot move away.
+
+    The force on a body at one step is the sum of all its contacts with the robot side. A violation is a
+    force above the region's limit at consecutive steps for at least `min_duration_s`, or until the end of
+    the rollout, because the robot then holds its last pose. Bodies that are not fixed are not checked.
+    """
+    c = facts.contacts["human"]
+    if not len(c.t):
+        return None
+    clamped = c.other_fixed.astype(bool)
+    last = round(float(facts.t[-1]) / c.dt)
+    min_steps = p.min_duration_s / c.dt - 0.5  # half a step of tolerance for rounding
+    found = []
+    for body in np.unique(c.other_body[clamped]):
+        rows = np.flatnonzero(clamped & (c.other_body == body))
+        steps, row_step = np.unique(np.round(c.t[rows] / c.dt).astype(int), return_inverse=True)
+        force = np.bincount(row_step, weights=c.force_n[rows])
+        region = ctx.regions.get(body)
+        limit = p.max_force_n.get(region, 0.0)  # no region: any force is too much
+        over = np.flatnonzero(force > limit)
+        if not len(over):
+            continue
+        # Runs of consecutive steps above the limit, as first and end indices into `steps`.
+        cuts = np.flatnonzero(np.diff(steps[over]) > 1)
+        for first, end in zip(over[np.r_[0, cuts + 1]], over[np.r_[cuts, len(over) - 1]]):
+            n = steps[end] - steps[first] + 1
+            at_end = steps[end] >= last
+            if n < min_steps and not at_end:
+                continue
+            run = rows[(row_step >= first) & (row_step <= end)]  # in time order
+            robot = c.robot_body[run[np.argmax(c.force_n[run])]]
+            peak = float(force[first:end + 1].max())
+            still = " and still at the end of the rollout" if at_end else ""
+            found.append(Violation(
+                "no_human_pinch", float(c.t[run[0]]), peak, float(limit), (robot, body),
+                f"{robot} presses {body} ({region}) against its support with up to {peak:.0f} N for "
+                f"{n * c.dt:.2f} s{still}; the limit for a clamp is {limit:.0f} N for {p.min_duration_s:.2f} s",
+            ))
+            break
+    return min(found, key=lambda v: v.t, default=None)
 
 
 def slow_near_human(facts: Facts, p: SlowNearHuman, ctx: Context) -> Violation | None:

@@ -141,6 +141,16 @@ def test_safe_move_away_from_the_person(sim, arm, measure):
     assert facts.tilt["liquid"].deg["hot_cup"].max() < 2
 
 
+def test_contacts_say_which_bodies_are_fixed(sim, arm, measure):
+    # The cup has a free joint, so it is not fixed. Every human body is welded to the world.
+    facts, _ = _facts(sim, arm, measure, "pick", {"object": "hot_cup"}, {Need("contact", ("hot",))})
+    c = facts.contacts["hot"]
+    assert len(c.t) and not c.other_fixed.any()
+    assert c.dt == sim.model.opt.timestep
+    human = [sim.model.body(b) for b in range(sim.model.nbody) if sim.model.body(b).name in RULES.bodies("human")]
+    assert all(b.weldid[0] == 0 for b in human)
+
+
 # --- Speed -------------------------------------------------------------------
 
 
