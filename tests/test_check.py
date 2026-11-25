@@ -12,10 +12,12 @@ from preflight.core.check import Checker
 from preflight.criteria import REGISTRY, CriterionSpec, Need, Params, load_rules
 from preflight.criteria import checks
 from preflight.criteria.catalogue import (
-    Clearance, FragileDrop, HumanForce, RobotLimits, SlowNearHuman, Spill, Workspace,
+    Clearance, FragileDrop, HumanForce, RobotLimits, SideEffects, SlowNearHuman, Spill, Workspace,
 )
 from preflight.criteria.checks import Context
-from preflight.measure import ContactFacts, Fall, Facts, Measure, Positions, Proximity, RobotHealth, Speed, Tilt
+from preflight.measure import (
+    ContactFacts, Diff, Fall, Facts, Measure, Positions, Proximity, RobotHealth, Speed, Tilt,
+)
 from preflight.robots import TabletopArm
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -223,12 +225,57 @@ def test_robot_limits_reports_the_earliest_violation():
     assert v.t == pytest.approx(0.6) and v.bodies == ("panda/joint4",)
 
 
+# --- no_side_effects -----------------------------------------------------------
+
+
+def _diff(dist, names=("knife",), held=()):
+    dist = np.array(dist, float).reshape(len(T), -1)
+    return _facts(diff=Diff(tuple(names), dist, frozenset(held)))
+
+
+@pytest.mark.parametrize("end, fires", [(0.019, False), (0.021, True)])  # tolerance 2 cm
+def test_side_effect_tolerance(end, fires):
+    v = checks.no_side_effects(_diff([0.0, 0.01, end]), SideEffects(tolerance_m=0.02), CTX)
+    assert (v is not None) == fires
+    if fires:
+        assert v.bodies == ("knife",) and v.value == pytest.approx(end) and v.limit == 0.02
+
+
+def test_side_effect_judges_the_end_not_the_peak():
+    # Pushed 5 cm, then back within the tolerance: the world at the end is as it was.
+    assert checks.no_side_effects(_diff([0.0, 0.05, 0.01]), SideEffects(tolerance_m=0.02), CTX) is None
+
+
+def test_side_effect_time_is_the_start_of_the_lasting_change():
+    v = checks.no_side_effects(_diff([0.0, 0.03, 0.04]), SideEffects(tolerance_m=0.02), CTX)
+    assert v.t == T[1]
+    v = checks.no_side_effects(_diff([0.03, 0.01, 0.04]), SideEffects(tolerance_m=0.02), CTX)
+    assert v.t == T[2]  # an earlier excursion that came back does not count
+
+
+def test_side_effect_ignores_held_objects():
+    facts = _diff([[0.0, 0.0], [0.1, 0.0], [0.3, 0.05]], names=("hot_cup", "plate"), held=("hot_cup",))
+    v = checks.no_side_effects(facts, SideEffects(tolerance_m=0.02), CTX)
+    assert v.bodies == ("plate",)
+
+
+def test_side_effect_ignores_exempt_objects():
+    ctx = Context(regions=RULES.regions, tags=RULES.tags, exempt=frozenset({"knife"}))
+    assert checks.no_side_effects(_diff([0.0, 0.1, 0.2]), SideEffects(tolerance_m=0.02), ctx) is None
+
+
+def test_side_effect_reports_the_earliest_object():
+    facts = _diff([[0.0, 0.0], [0.0, 0.05], [0.05, 0.05]], names=("knife", "plate"))
+    v = checks.no_side_effects(facts, SideEffects(tolerance_m=0.02), CTX)
+    assert v.bodies == ("plate",) and v.t == T[1]
+
+
 # --- Engine --------------------------------------------------------------------
 
 
 def test_unchecked_criteria_are_reported():
     _, unchecked = Checker(RULES)._plan("move_to")
-    assert set(unchecked) == {"no_human_pinch", "hazard_allowlist", "no_side_effects"}
+    assert set(unchecked) == {"no_human_pinch", "hazard_allowlist"}
 
 
 def test_exemption_with_an_unchecked_replacement_is_not_applied():
@@ -267,7 +314,7 @@ def test_a_check_that_fails_blocks():
                    tilt={"liquid": Tilt("liquid", {})}, falls={"fragile": ()},
                    positions=Positions(("tcp",), np.array([[[0.4, 0.0, 1.0]]]), np.full((1, 3), np.nan),
                                        np.full(1, None, object)),
-                   robot=_robot().robot)
+                   robot=_robot().robot, diff=Diff(("knife",), np.zeros((1, 1)), frozenset()))
     result = Checker(rules, registry).check(facts, "move_to")
     (finding,) = result.findings
     assert finding.violation.criterion == "broken" and finding.action == "block"

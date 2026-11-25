@@ -15,7 +15,9 @@ import numpy as np
 if TYPE_CHECKING:  # Measure imports this package, so import its types only for type checkers.
     from preflight.measure import Facts
 
-    from .catalogue import Clearance, FragileDrop, HumanForce, RobotLimits, SlowNearHuman, Spill, Workspace
+    from .catalogue import (
+        Clearance, FragileDrop, HumanForce, RobotLimits, SideEffects, SlowNearHuman, Spill, Workspace,
+    )
 
 # A clearance that was already below the limit at the start must shrink by more than this to count.
 CLEARANCE_TOL_M = 0.005
@@ -216,4 +218,28 @@ def robot_limits(facts: Facts, p: RobotLimits, ctx: Context) -> Violation | None
             "robot_limits", float(c.t[0]), float(c.force_n[0]), None, (c.robot_body[0], c.other_body[0]),
             f"{c.robot_body[0]} touches {c.other_body[0]} with {c.force_n[0]:.0f} N: the robot collides with itself",
         ))
+    return min(found, key=lambda v: v.t, default=None)
+
+
+def no_side_effects(facts: Facts, p: SideEffects, ctx: Context) -> Violation | None:
+    """Compare the end of the rollout with the start: each object the action does not hold must end within
+    tolerance_m of where it started.
+
+    The objects that the gripper holds at some time are the ones the tool declared it would move. The time
+    of a violation is the start of the lasting change: the first sample after the last one within tolerance.
+    """
+    diff = facts.diff
+    found = []
+    for j, body in enumerate(diff.names):
+        if body in diff.held or body in ctx.exempt:
+            continue
+        dist = diff.dist_m[:, j]
+        if dist[-1] > p.tolerance_m:
+            inside = np.flatnonzero(dist <= p.tolerance_m)
+            i = int(inside[-1]) + 1 if len(inside) else 0
+            found.append(Violation(
+                "no_side_effects", float(facts.t[i]), float(dist[-1]), p.tolerance_m, (body,),
+                f"{body} ends {dist[-1] * 100:.1f} cm from where it was, but the action does not hold it; "
+                f"the tolerance is {p.tolerance_m * 100:.0f} cm",
+            ))
     return min(found, key=lambda v: v.t, default=None)
