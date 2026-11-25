@@ -15,12 +15,18 @@ import numpy as np
 if TYPE_CHECKING:  # Measure imports this package, so import its types only for type checkers.
     from preflight.measure import Facts
 
-    from .catalogue import Clearance, FragileDrop, HumanForce, SlowNearHuman, Spill, Workspace
+    from .catalogue import Clearance, FragileDrop, HumanForce, RobotLimits, SlowNearHuman, Spill, Workspace
 
 # A clearance that was already below the limit at the start must shrink by more than this to count.
 CLEARANCE_TOL_M = 0.005
 # Points may be this far outside the workspace box (the robot base stands on its lower face).
 WORKSPACE_TOL_M = 0.005
+# MuJoCo clamps an actuator force to its force range, so a force this close to the end of the range is at the limit.
+SATURATION_TOL = 0.01
+# A call that starts while the robot still moves from the previous call saturates at the start, because its
+# trajectory starts at rest: up to 0.27 s in chained 1.7 m/s moves. Saturation from the first row may last this
+# much longer. A strain that the previous call left would have shown in that call's settle time.
+START_SATURATION_S = 0.5
 
 
 @dataclass(frozen=True)
@@ -161,3 +167,53 @@ def workspace(facts: Facts, p: Workspace, ctx: Context) -> Violation | None:
         f"{name} leaves the workspace: {'xyz'[axis]} = {point[axis]:.3f} m, "
         f"the allowed range is {p.min_xyz[axis]:.2f} to {p.max_xyz[axis]:.2f} m",
     )
+
+
+def robot_limits(facts: Facts, p: RobotLimits, ctx: Context) -> Violation | None:
+    """Three ways to damage the robot: a joint at the end of its range, an actuator held at its force limit
+    (MuJoCo clamps the force, so the signal is the time at the limit, not a force above it), and self-collision.
+    """
+    r = facts.robot
+    found = []
+
+    lo, hi = r.q_range[:, 0], r.q_range[:, 1]
+    margin = np.fmin(r.qpos - lo, hi - r.qpos)  # (T, J)
+    rows, cols = np.nonzero(margin < p.joint_margin_rad)  # in time order
+    if len(rows):
+        i, j = int(rows[0]), int(cols[0])
+        q = r.qpos[i, j]
+        end = lo[j] if q - lo[j] < hi[j] - q else hi[j]
+        found.append(Violation(
+            "robot_limits", float(r.t[i]), float(margin[i, j]), p.joint_margin_rad, (r.joints[j],),
+            f"{r.joints[j]} reaches the end of its range: {q:.3f} rad, {margin[i, j] * 1000:.1f} mrad from its limit "
+            f"of {end:.3f} rad; the margin is {p.joint_margin_rad * 1000:.0f} mrad",
+        ))
+
+    flo, fhi = r.force_range[:, 0], r.force_range[:, 1]
+    saturated = (r.force <= flo * (1 - SATURATION_TOL)) | (r.force >= fhi * (1 - SATURATION_TOL))  # (T, A)
+    edges = np.diff(np.pad(saturated, ((1, 1), (0, 0))).astype(np.int8), axis=0)
+    # Transposed, so that the starts and ends of the runs of one actuator line up.
+    (acts, starts), (_, ends) = np.nonzero(edges.T == 1), np.nonzero(edges.T == -1)
+    dt = float(r.t[1] - r.t[0]) if len(r.t) > 1 else 0.0
+    runs = []
+    for a, s, e in zip(acts, starts, ends):
+        allowed = p.max_saturated_s + (START_SATURATION_S if s == 0 else 0.0)
+        if (e - s) * dt > allowed + 1e-9:
+            runs.append((r.t[s], int(a), int(s), int(e), allowed))
+    if runs:
+        t, a, s, e, allowed = min(runs)
+        limit = fhi[a] if r.force[s, a] > 0 else -flo[a]
+        why = f"the limit is {allowed:.2f} s" + (" from the start of a call" if s == 0 else "")
+        found.append(Violation(
+            "robot_limits", float(t), (e - s) * dt, allowed, (r.actuators[a],),
+            f"{r.actuators[a]} stays at its force limit of {limit:.0f} for {(e - s) * dt:.2f} s, so the robot pushes "
+            f"against something or cannot follow its path; {why}",
+        ))
+
+    c = r.self_contacts
+    if len(c.t):
+        found.append(Violation(
+            "robot_limits", float(c.t[0]), float(c.force_n[0]), None, (c.robot_body[0], c.other_body[0]),
+            f"{c.robot_body[0]} touches {c.other_body[0]} with {c.force_n[0]:.0f} N: the robot collides with itself",
+        ))
+    return min(found, key=lambda v: v.t, default=None)

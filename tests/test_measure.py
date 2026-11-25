@@ -12,7 +12,7 @@ import pytest
 from preflight.backends import MujocoBackend
 from preflight.criteria import REGISTRY, Need, load_rules
 from preflight.measure import REPORT_RADIUS_M, Measure
-from preflight.robots import TabletopArm
+from preflight.robots import TabletopArm, Trajectory
 
 ROOT = Path(__file__).resolve().parent.parent
 RULES = load_rules(ROOT / "scenes" / "kitchen_rules.yaml")
@@ -23,6 +23,7 @@ HOT_TO_HUMAN = Need("proximity", ("hot", "human"))
 GRIPPER_TO_HUMAN = Need("proximity", ("gripper", "human"))
 HUMAN_CONTACT = Need("contact", ("human",))
 SPEED = Need("speed")
+ROBOT = Need("robot")
 
 
 @pytest.fixture
@@ -57,7 +58,7 @@ def _over_hand(sim, height):
 def test_kitchen_needs():
     needs = REGISTRY.needs(RULES.params)
     assert {HUMAN_CONTACT, SPEED, GRIPPER_TO_HUMAN, HOT_TO_HUMAN, Need("proximity", ("sharp", "human")),
-            Need("tilt", ("liquid",)), Need("fall", ("fragile",)), Need("position")} == needs
+            Need("tilt", ("liquid",)), Need("fall", ("fragile",)), Need("position"), ROBOT} == needs
 
 
 def test_only_needed_facts_are_computed(sim, arm, measure):
@@ -179,6 +180,72 @@ def test_normal_place_is_not_a_fall(sim, arm, measure):
     facts, _ = _facts(sim, arm, measure, "place", {"xyz": [0.30, -0.10, TABLE_TOP_Z + plate_half]},
                       {Need("fall", ("fragile",))})
     assert facts.falls["fragile"] == ()
+
+
+# --- Robot health ----------------------------------------------------------------
+
+
+def _longest_at_limit(robot) -> float:
+    """Longest time that one actuator stays at its force limit, in seconds."""
+    at_limit = np.abs(robot.force) >= 0.99 * robot.force_range[:, 1]
+    longest = 0
+    for column in at_limit.T:
+        run = 0
+        for at in column:
+            run = run + 1 if at else 0
+            longest = max(longest, run)
+    return longest * (robot.t[1] - robot.t[0])
+
+
+def test_robot_health_reads_the_arm(sim, arm, measure):
+    facts, rollout = _facts(sim, arm, measure, "move_to", {"xyz": [0.45, 0.1, 1.0]}, {ROBOT})
+    robot = facts.robot
+    # Not the fingers, which rest at the open end of their range, and not the gripper actuator.
+    assert robot.joints == tuple(f"panda/joint{i}" for i in range(1, 8))
+    assert robot.actuators == tuple(f"panda/actuator{i}" for i in range(1, 8))
+    assert len(robot.t) == len(rollout.trace)  # every physics step
+    np.testing.assert_array_equal(robot.force, rollout.trace.actuator_force[:, :7])
+    assert robot.force_range[:, 1].tolist() == [87] * 4 + [12] * 3
+    # An ordinary move: far from the force limits and the joint limits, and no contact with itself.
+    assert (np.abs(robot.force) < 0.5 * robot.force_range[:, 1]).all()
+    assert np.fmin(robot.qpos - robot.q_range[:, 0], robot.q_range[:, 1] - robot.qpos).min() > 0.1
+    assert len(robot.self_contacts.t) == 0
+
+
+def test_pressing_into_the_table_holds_an_actuator_at_its_limit(sim, arm, measure):
+    # The fingertips reach below the TCP, so a TCP on the table top pushes them into the table.
+    facts, _ = _facts(sim, arm, measure, "move_to", {"xyz": [0.35, 0.0, TABLE_TOP_Z], "speed": 0.2}, {ROBOT})
+    assert _longest_at_limit(facts.robot) > 0.5
+
+
+def test_ordinary_pick_does_not_hold_an_actuator_at_its_limit(sim, arm, measure):
+    facts, _ = _facts(sim, arm, measure, "pick", {"object": "hot_cup"}, {ROBOT})
+    assert _longest_at_limit(facts.robot) == 0
+
+
+def test_a_trajectory_past_the_base_stop_reaches_it(sim, arm, measure):
+    # The planner keeps joints inside their range, so this trajectory is built by hand: it aims joint 1 past its
+    # lower stop. Joint 1 turns about a vertical axis, so gravity does not hold it back from the stop.
+    home = sim.live.qpos[arm._qadr].copy()
+    past = home.copy()
+    past[0] = sim.model.joint("panda/joint1").range[0] - 0.05
+    traj = Trajectory("test", {}, np.array([0.0, 2.0]), np.array([home, past]), gripper=255.0)
+    rollout = sim.rollout(arm, traj)
+    assert rollout.ok, rollout.detail
+    robot = measure.facts(rollout.trace, {ROBOT}).robot
+    base = robot.joints.index("panda/joint1")
+    assert (robot.qpos[:, base] - robot.q_range[base, 0]).min() < 1e-3
+
+
+def test_folding_the_hand_onto_the_arm_is_a_self_collision(sim, arm, measure):
+    home = sim.live.qpos[arm._qadr].copy()
+    folded = [0.0, 0.0, 0.0, -2.0, 0.0, 0.0, -0.785]  # joint 6 near 0 folds the hand back onto link 5
+    traj = Trajectory("test", {}, np.array([0.0, 2.0]), np.array([home, folded]), gripper=255.0)
+    rollout = sim.rollout(arm, traj)
+    assert rollout.ok, rollout.detail
+    contacts = measure.facts(rollout.trace, {ROBOT}).robot.self_contacts
+    assert set(zip(contacts.robot_body, contacts.other_body)) == {("panda/link5", "panda/hand")}
+    assert contacts.force_n.max() > 10
 
 
 # --- Speed of Measure -------------------------------------------------------------
