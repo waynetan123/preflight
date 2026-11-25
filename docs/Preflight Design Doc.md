@@ -233,11 +233,13 @@ Each criterion's `CriterionSpec` has a `check` function from `preflight/criteria
 - **Not checked yet.** `hazard_allowlist`, and the replacements `pour_into_receptacle` and `safe_handover`. `CheckResult.unchecked` gives each one with a reason. A criterion that cannot be checked never passes silently.
   - `hazard_allowlist`: this check needs the semantic track: object labels, hazard zones and appliance state. The kitchen has no appliance.
   - `pour_into_receptacle` and `safe_handover`: these checks run only inside the exemptions of the `pour` and `hand_over` tools. The arm has neither tool, and its gripper always points down.
-- **Pinch.** MuJoCo makes no contact between two bodies that are fixed to the world. Thus the hand and the table never touch, and the "two opposing contacts" rule cannot see a hand pinched against the table. In v0.1, a robot contact on a human body that is fixed to the world is a clamp, because the body cannot move away.
-  - Check adds the forces of all robot contacts on the body at each step. A violation is a force above the pinch limit of the region for at least 0.5 s (quasi-static contact, ISO/TS 15066).
-  - A force above the limit at the end of the rollout is also a violation, because the robot then holds its last pose.
-  - The pinch limits are placeholders at half the strike limits: hand 25 N, torso 20 N, head 0 N. A shorter contact is transient, and `no_human_strike` judges it.
-  - Check ignores a body that is not fixed, such as a mocap hand. A movable human needs the contact normals in the trace.
+- **Pinch.** A pinch is a contact that the person cannot pull away from, held for 0.5 s or more (quasi-static contact, ISO/TS 15066). Two kinds of contact count.
+  - **Clamp.** MuJoCo makes no contact between two bodies that are fixed to the world. Thus the hand and the table never touch, and a rule that needs two opposite contacts cannot see a hand pinched against the table. A robot contact on a human body that is fixed to the world is a clamp, because the body cannot move away.
+  - **Squeeze.** A human body that touches both fingers at the same step is caught between them. This kind also counts for a body that can move.
+  - Check adds the forces of all robot contacts on the body at each step. A contact of 0.5 s or more must keep its peak at or below the pinch limit of the region for the whole contact. A shorter contact is transient, and `no_human_strike` judges it.
+  - A loss of contact of 0.01 s or less does not end a contact, because it is contact noise. A contact that goes on to the end of the rollout counts as long, because the robot then holds its last pose.
+  - The pinch limits are placeholders at half the strike limits: hand 25 N, torso 20 N, head 0 N.
+  - No tool closes the fingers in v0.1, because `pick` holds an object with a weld. A test closes the fingers around the hand with a trajectory built by hand. The model's gripper is a weak position servo, and it squeezes the hand with only about 6 N. So the squeeze case cannot reach the 25 N hand limit in this model.
 - **Robot limits.** `robot_limits` reads the arm and gives the earliest of three violations. The check ignores the gripper. The fingers rest at the open end of their range, and the gripper actuator stays far below its force limit.
   - A joint comes within `joint_margin_rad` (placeholder 1 mrad) of the end of its range.
   - An actuator stays at its force limit for more than `max_saturated_s` (placeholder 0.05 s). MuJoCo clamps the actuator force to its force range, so the force can never be above the limit. The check measures the time at the limit. A saturation that starts in the first row can last 0.5 s more, because the arm can still move from the previous call.
@@ -785,17 +787,22 @@ What this gives up: no end-to-end evidence that an LLM agent re-plans and finish
 
 Open questions:
 
-- [ ] Is the name free? Check PyPI and GitHub for `preflight-robot` and pick a fallback.
-- [ ] Which hosted and open-weight models for the LLM-judge baseline, and what API budget for judging about 2,000 data points with each?
+- [x] Is the name free? Check PyPI and GitHub for `preflight-robot` and pick a fallback. On 25 Nov 2026, PyPI had no project `preflight-robot` (HTTP 404), and no GitHub repo had exactly that name. The fallback `preflight-robotics` was also free on PyPI. The name `preflight` is taken on PyPI.
+- [ ] Which hosted and open-weight models for the LLM-judge baseline, and what API budget for judging about 2,000 data points with each? Decided on 25 Nov 2026: the judge is Claude or ChatGPT for now. The API budget is still open.
 - [ ] Should the agent's system prompt say it is guarded, or should the firewall stay invisible?
 - [x] Should `describe_scene` show the hazard tags to the LLM? Yes. The tags come from the trusted rules file, and with them the LLM can plan moves that the firewall allows.
 - [x] The kitchen scene starts with clearance violations: the hot cup is 22 cm and the knife is 19 cm from the left hand, and both limits are 30 cm. Should Check judge only what the action makes worse, should the scene change, or should the limits change? Check judges only what the action makes worse. A clearance violation counts only if the action moves the distance below the limit, or makes it smaller than it was at the start. The scene and the limits do not change.
 - [ ] Should the person's contact stiffness come from body-region data (ISO/TS 15066 gives stiffness values)? It sets the measured strike forces.
 - [x] How should the time budget work for long motions? The physics alone needs about 230 ms for 10.8 s of simulated time. A slow motion can pass the 400 ms rollout budget, and then the result depends on the speed of the computer. The same action can be blocked on one run and allowed on the next. `compile()` refuses a motion longer than 6 s with `CompileError`, and tells the caller to split the move. The wall-clock timeout stays only as a backstop for broken physics, at 2 s. The verdict then depends only on the physics.
 - [x] Static human for v0.1, or a scripted moving hand from the start? Static human: `scenes/kitchen.xml` freezes the humanoid in one pose.
-- [ ] Which duration rule does `no_human_pinch` use? Now, the force must stay above the limit for 0.5 s. Another reading of ISO/TS 15066 is stricter: a contact longer than 0.5 s must keep its peak below the limit. With the current rule, a palm on the forearm for more than 0.5 s, with a peak of 49.6 N, passes. The force stayed above 25 N for only 0.458 s.
-- [ ] How can a rules file exempt `no_side_effects`? The loader accepts an exemption only for a tag that the criterion reads, and `no_side_effects` reads no tags.
-- [ ] Where do the ISO/TS 15066 values for pinch come from? The factor of 2 between transient and quasi-static limits, and the 0.5 s, come from one secondary source ([arXiv 2203.02706](https://arxiv.org/pdf/2203.02706)), not from the standard.
+- [x] Which duration rule does `no_human_pinch` use? A contact of 0.5 s or more must keep its peak at or below the limit. The first rule needed the force above the limit for 0.5 s. With it, a palm on the forearm for more than 0.5 s, with a peak of 49.6 N, passed.
+- [x] How can a rules file exempt `no_side_effects`? It cannot, for now. The loader accepts an exemption only for a tag that the criterion reads, and no tool needs this exemption yet.
+- [ ] Do the force limits take the ISO/TS 15066 values? Research on 25 Nov 2026 found these facts:
+  - The text of ISO/TS 15066:2016 is not free, and nobody on the project has read it. The values below come from secondary sources.
+  - The TS defines quasi-static contact as a body part that cannot move away, and transient contact as one that can recoil. It gives no time value. The 0.5 s comes from a TÜV Austria and Fraunhofer Austria white paper (2017), which calls it a definition.
+  - Two independent copies of Annex A, Table A.2 agree on the quasi-static forces. In newtons: face 65, skull 130, abdomen 110, chest 140, pelvis 180, upper arm 150, lower arm 160, hand 140, thigh 220, lower leg 130. A transient contact may have 2 times these values, except on the skull and the face.
+  - These values are 4 to 9 times the placeholders. For example, the hand limit is 140 N against 25 N for a pinch, and 280 N against 50 N for a strike. The foot has no ISO region, and the MuJoCo head and torso each cover several ISO regions.
+  - DGUV calls most of the TS limits provisional. ISO 10218-2:2025 is said to carry them unchanged, but nobody on the project has read it.
 
 ## Sources
 

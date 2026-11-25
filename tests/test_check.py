@@ -1,6 +1,7 @@
 """Each check gives the right result just inside and just outside its limit, and the engine applies
 exemptions, reports what it cannot check, and fails closed."""
 
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 
@@ -12,13 +13,13 @@ from preflight.core.check import Checker
 from preflight.criteria import REGISTRY, CriterionSpec, Need, Params, load_rules
 from preflight.criteria import checks
 from preflight.criteria.catalogue import (
-    Clearance, FragileDrop, HumanForce, RobotLimits, SideEffects, SlowNearHuman, Spill, Workspace,
+    Clearance, FragileDrop, HumanForce, HumanPinch, RobotLimits, SideEffects, SlowNearHuman, Spill, Workspace,
 )
 from preflight.criteria.checks import Context
 from preflight.measure import (
     ContactFacts, Diff, Fall, Facts, Measure, Positions, Proximity, RobotHealth, Speed, Tilt,
 )
-from preflight.robots import TabletopArm
+from preflight.robots import TabletopArm, Trajectory
 
 ROOT = Path(__file__).resolve().parent.parent
 RULES = load_rules(ROOT / "scenes" / "kitchen_rules.yaml")
@@ -69,6 +70,7 @@ def test_strike_reports_the_earliest_contact():
 
 DT = 0.01
 PINCH = RULES.params["no_human_pinch"]  # defaults: hand 25 N, torso 20 N, head 0 N, for 0.5 s
+FINGERS = frozenset({"panda/left_finger", "panda/right_finger"})
 
 
 def _clamp(force, steps, other="human_hand_left", start=0.0, robot="panda/left_finger", fixed=True):
@@ -82,7 +84,7 @@ def _pinch_facts(*parts, end=2.0) -> Facts:
     merged = {k: np.concatenate([part[k] for part in parts]) for k in parts[0]}
     order = np.argsort(merged["t"], kind="stable")
     m = {k: v[order] for k, v in merged.items()}
-    contacts = ContactFacts("human", m["t"], m["robot"], m["other"], m["force"], m["fixed"], DT)
+    contacts = ContactFacts("human", m["t"], m["robot"], m["other"], m["force"], m["fixed"], DT, FINGERS)
     return _facts(t=np.array([0.0, end]), contacts={"human": contacts})
 
 
@@ -117,14 +119,30 @@ def test_pinch_minimum_duration(steps, fires):
     assert (v is not None) == fires
     if fires:
         assert v.t == pytest.approx(0.5)
-        assert f"for {steps * DT:.2f} s;" in v.message
+        assert f"for {steps * DT:.2f} s, with up to 30 N;" in v.message
 
 
-def test_pinch_needs_consecutive_steps_above_the_limit():
-    # 0.3 s above, one step below the limit, 0.3 s above: two transient contacts, not one clamp.
-    v = checks.no_human_pinch(_pinch_facts(_clamp(30, 30), _clamp(20, 1, start=0.30), _clamp(30, 30, start=0.31)),
-                              PINCH, CTX)
-    assert v is None
+def test_a_long_contact_must_keep_its_peak_below_the_limit():
+    # 0.6 s at 20 N with a peak of 30 N for 0.05 s: the contact is long, so the peak counts.
+    contact = (_clamp(20, 25), _clamp(30, 5, start=0.25), _clamp(20, 30, start=0.30))
+    v = checks.no_human_pinch(_pinch_facts(*contact), PINCH, CTX)
+    assert v.t == pytest.approx(0.25) and v.value == pytest.approx(30)
+    assert "for 0.60 s, with up to 30 N" in v.message
+    # The same peak in a contact of 0.3 s is transient.
+    assert checks.no_human_pinch(_pinch_facts(_clamp(20, 25), _clamp(30, 5, start=0.25)), PINCH, CTX) is None
+
+
+def test_a_long_contact_below_the_limit_is_not_a_pinch():
+    assert checks.no_human_pinch(_pinch_facts(_clamp(24.9, 150)), PINCH, CTX) is None
+
+
+@pytest.mark.parametrize("gap_steps, fires", [
+    (1, True),    # a loss of contact for 0.01 s is contact noise: one contact of 0.61 s
+    (2, False),   # 0.02 s without contact: two contacts of 0.3 s each
+])
+def test_a_short_loss_of_contact_does_not_end_the_contact(gap_steps, fires):
+    v = checks.no_human_pinch(_pinch_facts(_clamp(30, 30), _clamp(30, 30, start=0.30 + gap_steps * DT)), PINCH, CTX)
+    assert (v is not None) == fires
 
 
 def test_pinch_reports_the_earliest_clamp():
@@ -150,11 +168,35 @@ def test_pinch_ignores_a_body_that_is_not_fixed():
     assert checks.no_human_pinch(_pinch_facts(_clamp(100, 100, fixed=False)), PINCH, CTX) is None
 
 
+def test_squeeze_between_the_fingers():
+    # A body that can move away is still caught when both fingers touch it at the same steps.
+    left, right = (_clamp(15, 60, robot=f, fixed=False) for f in ("panda/left_finger", "panda/right_finger"))
+    v = checks.no_human_pinch(_pinch_facts(left, right), PINCH, CTX)
+    assert v.value == pytest.approx(30) and "squeezes human_hand_left (hand) between the fingers" in v.message
+
+
+def test_squeeze_on_a_fixed_body_gives_the_squeeze_message():
+    left, right = (_clamp(15, 60, robot=f) for f in ("panda/left_finger", "panda/right_finger"))
+    assert "between the fingers" in checks.no_human_pinch(_pinch_facts(left, right), PINCH, CTX).message
+
+
+@pytest.mark.parametrize("left, right", [
+    (dict(steps=60), None),                                        # one finger only
+    (dict(steps=30), dict(steps=30, start=0.30)),                  # one finger after the other
+    (dict(steps=30), dict(steps=30)),                              # both fingers, but for 0.3 s
+])
+def test_squeeze_needs_both_fingers_for_the_minimum_duration(left, right):
+    parts = [_clamp(40, robot="panda/left_finger", fixed=False, **left)]
+    if right is not None:
+        parts.append(_clamp(40, robot="panda/right_finger", fixed=False, **right))
+    assert checks.no_human_pinch(_pinch_facts(*parts), PINCH, CTX) is None
+
+
 def test_pinch_still_pressing_at_the_end_of_the_rollout():
     # The robot holds its last pose after the call, so a short press at the end continues.
     clamp = _clamp(30, 20, start=1.0)
     v = checks.no_human_pinch(_pinch_facts(clamp, end=1.19), PINCH, CTX)
-    assert v is not None and "still at the end of the rollout" in v.message
+    assert v is not None and "still on at the end of the rollout" in v.message
     assert checks.no_human_pinch(_pinch_facts(clamp, end=2.0), PINCH, CTX) is None
 
 
@@ -485,7 +527,7 @@ def test_pinch_finger_on_the_hand(press):
     assert 30 < c.force_n.max() < 45
     v = result.findings[0].violation
     assert v.bodies == ("panda/left_finger", "human_hand_left") and v.limit == 25
-    assert "still at the end of the rollout" in v.message
+    assert "still on at the end of the rollout" in v.message
 
 
 def test_hard_press_is_a_strike_and_a_pinch(press):
@@ -494,10 +536,40 @@ def test_hard_press_is_a_strike_and_a_pinch(press):
     assert set(_criteria(result)) == {"no_human_pinch", "no_human_strike", "robot_limits"}
 
 
-def test_short_bump_is_not_a_pinch(press):
-    # 5 cm toward the robot, the palm bumps the hand: above 25 N for about 0.25 s, then it rests at about
-    # 15 N. The bump is a transient contact under the strike limit, and the rest is under the pinch limit.
+def test_a_bump_that_stays_on_the_hand_is_a_pinch(press):
+    # 5 cm toward the robot, the palm bumps the hand above 25 N for about 0.25 s, then rests on it at about
+    # 15 N to the end. The contact is long, so its peak counts: no_human_pinch fires, and no_human_strike does
+    # not, because each contact stays under 50 N.
     facts, result = press(0.0, -0.05, 0.77)
     c = facts.contacts["human"]
     assert 25 < c.force_n.max() < 50
-    assert "no_human_pinch" not in _criteria(result) and "no_human_strike" not in _criteria(result)
+    assert _criteria(result) == ["no_human_pinch"]
+    v = result.findings[0].violation
+    assert v.value == pytest.approx(c.force_n.max(), rel=0.05) and v.limit == 25
+
+
+def test_fingers_closed_on_the_hand_are_a_squeeze():
+    """Lower the open gripper around the hand, then close it with a hand-built trajectory: no tool closes it."""
+    sim = MujocoBackend(RULES.scene)
+    arm = TabletopArm(sim.model)
+    measure, checker = Measure(sim.model, RULES, arm), Checker(RULES)
+    x, y, _ = map(float, sim.live.geom("human_hand_left").xpos)
+    # 2 cm toward the robot, so that the palm misses the forearm. The fingers close along x, around the hand.
+    sim.execute(arm, arm.compile(sim.live, "move_to", {"xyz": [x, y - 0.02, 0.95], "speed": 0.2}))
+    sim.execute(arm, arm.compile(sim.live, "move_to", {"xyz": [x, y - 0.02, 0.80], "speed": 0.05}))
+    q = sim.live.qpos[arm._qadr].copy()
+    rollout = sim.rollout(arm, Trajectory("close", {}, np.array([0.0, 1.5]), np.array([q, q]), gripper=0.0))
+    assert rollout.ok, rollout.detail
+    facts = measure.facts(rollout.trace, checker.needs("move_to"))
+    c = facts.contacts["human"]
+    assert c.fingers == FINGERS
+    assert set(zip(c.robot_body, c.other_body)) == {(f, "human_hand_left") for f in FINGERS}
+    # The model's gripper is a weak position servo: closed on the hand, it pushes with only about 5 N, under the
+    # 25 N limit. A lower limit shows that the contact is found.
+    assert checks.no_human_pinch(facts, PINCH, CTX) is None
+    low = HumanPinch(max_force_n={**PINCH.max_force_n, "hand": 4.0})
+    assert checks.no_human_pinch(facts, low, CTX) is not None  # the fixed hand: the clamp sees the first finger
+    # As if the hand could move away, only the squeeze can fire.
+    movable = replace(facts, contacts={"human": replace(c, other_fixed=np.zeros(len(c.t), bool))})
+    v = checks.no_human_pinch(movable, low, CTX)
+    assert v is not None and "squeezes human_hand_left (hand) between the fingers" in v.message

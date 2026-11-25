@@ -36,7 +36,8 @@ class HumanPinch(HumanForce):
     """Limits for a clamped body. The loader checks `max_force_n` as it does for every HumanForce."""
 
     max_force_n: ForceLimits = dict(PLACEHOLDER_PINCH_FORCE_N)
-    # ISO/TS 15066 practice: a contact longer than 0.5 s is quasi-static, because the person cannot pull away.
+    # ISO/TS 15066 practice: a contact of 0.5 s or more is quasi-static, because the person cannot pull away.
+    # Its peak force must stay at or below max_force_n for the whole contact.
     min_duration_s: PositiveFloat = 0.5
 
 

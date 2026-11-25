@@ -25,6 +25,7 @@ class ContactFacts:
     force_n: np.ndarray  # (M,) normal force
     other_fixed: np.ndarray | None = None  # (M,) True if the tag body is fixed to the world, so it cannot move away
     dt: float | None = None  # seconds between physics steps
+    fingers: frozenset[str] = frozenset()  # the robot's finger bodies: a body that touches all of them is squeezed
 
 
 @dataclass(frozen=True)

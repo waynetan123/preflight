@@ -43,6 +43,9 @@ class Measure:
         self._robot = np.array(sorted(arm.bodies))
         self._fixed = model.body_weldid == 0  # no joint and no mocap body between it and the world
         self._gripper = np.array(sorted(arm.gripper_bodies))
+        # The fingers are the gripper bodies whose parent is in the gripper too: the hand is their parent.
+        self._fingers = frozenset(self._names[b] for b in arm.gripper_bodies
+                                  if model.body_parentid[b] in arm.gripper_bodies)
         self._held_by_eq = {eq: name_to_id[obj] for obj, eq in arm.grasp_welds.items()}
         # Robot health reads the arm only: the limited joints outside the gripper, and the actuators that drive them.
         arm_body = np.isin(model.jnt_bodyid, sorted(arm.bodies - arm.gripper_bodies))
@@ -168,7 +171,7 @@ class Measure:
         robot = np.where(flip, bodies[rows, 1], bodies[rows, 0])
         other = np.where(flip, bodies[rows, 0], bodies[rows, 1])
         return ContactFacts(tag, trace.t[c.step[rows]], self._names[robot], self._names[other], c.force[rows, 0],
-                            self._fixed[other], self.model.opt.timestep)
+                            self._fixed[other], self.model.opt.timestep, self._fingers)
 
     def _robot_health(self, trace: Trace) -> RobotHealth:
         model, joints, actuators = self.model, self._arm_joints, self._arm_actuators
