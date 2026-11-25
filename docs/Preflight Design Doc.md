@@ -15,9 +15,9 @@ Nov 6, 2026 · @Wayne · Status: Draft
 3. Wrap your robot and give the guarded tools to your agent:
 
 ```python
-fw = Firewall.from_yaml("rules.yaml", backend=MujocoBackend("kitchen.xml"))
-guarded = fw.wrap(robot)            # same API, every call now checked
-agent = make_agent(tools=guarded.tool_schemas())
+fw = Firewall.from_yaml("rules.yaml")    # the rules file names the scene
+guarded = fw.wrap()                       # every robot call is now checked
+agent = make_agent(tools=guarded.tool_schemas("anthropic"))
 ```
 
 4. Measure it: `preflight eval --dataset datasets/actions` reports the share of harmful actions blocked, the false-block rate and latency.
@@ -94,7 +94,7 @@ A modified action loops back through simulation before it can run, and a blocked
 | Rule engine | Applies tool exemptions, then evaluates every active safety criterion over the trace | `rules/` |
 | Verdict and repair | ALLOW, MODIFY or BLOCK; speed retiming | `core/` |
 | Executor | Runs only verified trajectories on the live robot | `robots/` |
-| Audit log | JSONL record and optional MP4 per decision | `audit/` |
+| Audit log | One JSONL record per decision, with the data to run it again | `audit/` |
 
 ## Safety criteria
 
@@ -445,26 +445,24 @@ Feedback has two modes. `detailed` (default for development) returns the rule an
 - **Feedback.** `Decision.message()` gives the tool result. `detailed` gives the rule, the value, the limit and the time. `minimal` gives only "done" or "blocked by safety policy".
 - **Unchecked criteria.** `Decision.unchecked` lists the criteria that could not be checked. They do not change the verdict in v0.1.
 
-Audit log: one JSONL record per decision with timestamp, session id, tool call, a hash of the compiled trajectory, verdict, violations, rollout seed and a hash of the starting state. Blocked actions can also save an MP4 of the rollout. `preflight replay audit.jsonl --id 42` reopens any decision in the MuJoCo viewer.
+Audit log: one JSONL record for each decision. A record has the time, the session, the tool call, the verdict, the findings, the starting state and the checked trajectory. It also has a SHA-256 hash of the state and of the trajectory. The firewall writes the record before the robot moves. `preflight replay audit.jsonl --id 42` will reopen any decision in the MuJoCo viewer. "Integrate in v0.1" gives the details.
 
 ## Integration API
 
 **Three ways in, one core: a Python wrapper, LLM tool-use adapters, and an MCP server.**
 
-**Python.** A robot plugs in by implementing a small `RobotAdapter` protocol: `get_state()`, `compile(action) -> Trajectory`, `execute(trajectory)` and `tools()`.
+**Python.** In v0.1 the firewall holds the simulated `TabletopArm`. A later `RobotAdapter` protocol will let other robots plug in: `get_state()`, `compile(action) -> Trajectory`, `execute(trajectory)` and `tools()`.
 
 ```python
-from preflight import Firewall, MujocoBackend
-from preflight.robots import TabletopArm
+from preflight.audit import AuditLog
+from preflight.core.firewall import Firewall
 
-sim = MujocoBackend("scenes/kitchen.xml")
-robot = TabletopArm(sim)
-fw = Firewall.from_yaml("rules.yaml", backend=sim)
-guarded = fw.wrap(robot)
+fw = Firewall.from_yaml("scenes/kitchen_rules.yaml", audit=AuditLog("audit.jsonl"))
+guarded = fw.wrap()
 
-result = guarded.call("move_to", x=0.4, y=0.1, z=0.2)
+result = guarded.call("move_to", xyz=[0.45, 0.10, 1.00], speed=0.2)
 result.verdict      # Verdict.ALLOW | MODIFY | BLOCK
-result.violations   # list of Violation(rule_id, value, limit, t)
+result.findings     # each Finding has a Violation: criterion, t, value, limit, bodies, message
 ```
 
 **LLM tool use.** `guarded.tool_schemas(format="anthropic" | "openai")` returns tool definitions. `guarded.handle_tool_call(name, args)` returns the text to send back as the tool result. The agent loop stays yours.
@@ -472,6 +470,31 @@ result.violations   # list of Violation(rule_id, value, limit, t)
 **MCP server.** `preflight serve --mcp --rules rules.yaml` exposes the guarded robot as MCP tools, so any MCP client (Claude Code, Claude Desktop, others) can drive the simulated robot through the firewall without code changes.
 
 **Later.** A ROS 2 node that guards action servers, and an adapter for VLA action chunks.
+
+### Integrate in v0.1
+
+`Firewall.wrap()` in `preflight/core/firewall.py` returns a `Guarded` object from `preflight/core/guarded.py`. It is the one entry point for the LLM's tool calls.
+
+- **Tools.** `Guarded.tool_schemas("anthropic")` or `Guarded.tool_schemas("openai")` gives four tools: `describe_scene`, `move_to`, `pick` and `place`. The arguments match `TOOL_ARGS` of the arm. `pick` lists only the objects that the robot can grasp. The definitions are plain dicts, so no SDK is necessary.
+- **Tool calls.** `Guarded.handle_tool_call(name, args)` returns the text of the tool result. `args` is a mapping, or the JSON string that OpenAI sends.
+  - `describe_scene` reads the world and changes nothing.
+  - Every other name goes to `Firewall.call()`. Thus an unknown tool or an unknown argument gets BLOCK from compile, and the log records it.
+  - If the arguments are not a JSON object, the result is an error, and nothing runs.
+- **Feedback.** `fw.wrap(feedback="minimal")` returns only "done" or "blocked by safety policy".
+- **Describe the scene.** `describe_scene` in `preflight/core/scene.py` reads a `WorldState` from a `WorldStateProvider`. In v0.1, `SimWorld` reads the live sim.
+  - The text gives the TCP position, the held object and the workspace. Then it lists each tagged or movable body with its position and tags, and each part of the person with its region.
+  - Positions are body origins in metres, because `place` puts the origin of the held object at its target.
+  - The tags come from the trusted rules file, and the body names come from the trusted scene file. Nothing in the text comes from the user or from the LLM.
+- **Audit log.** `AuditLog` in `preflight/audit/log.py` adds one JSON line for each `check` and each `call`.
+  - A record has the time, the session, the mode, the tool call, the verdict, the findings, the unchecked criteria and the timing.
+  - It also has the starting state (qpos, qvel, ctrl, the active welds and their poses) and the checked trajectory, with a SHA-256 hash of each.
+  - A test loads a record into a new sim and runs it. The final state matches the live robot to 1e-9.
+  - A `pick` record is about 37 KB, because it holds the full trajectory.
+- **Record first.** The firewall writes the record before the robot moves. If the write fails, the call raises an error and the robot does not move.
+- **Not in v0.1 yet.**
+  - There is no rollout seed, because v0.1 runs one rollout with no random changes.
+  - There is no MP4 of blocked moves. The record holds the data for `preflight replay`, which is not built yet.
+  - `fw.wrap()` takes no robot argument, because the firewall already holds its arm.
 
 ## Evaluation
 
@@ -511,12 +534,12 @@ Configurations compared: no guard (every harmful data point causes harm by defin
 
 ```text
 preflight/
-  core/        firewall.py  verdict.py  trace.py  check.py
+  core/        firewall.py  verdict.py  trace.py  check.py  scene.py  guarded.py
   measure/     facts.py  measure.py
   criteria/    schema.py (pydantic)  catalogue.py  checks.py  exemptions.py  registry.py  loader.py
   backends/    mujoco_backend.py (fork, rollout, fail closed, execute)
   robots/      tabletop_arm.py (primitives, IK, playback)  trajectory.py (speed profile, retiming)
-  adapters/    anthropic.py  openai.py  mcp_server.py
+  adapters/    tools.py  anthropic.py  openai.py  mcp_server.py
   audit/       log.py  replay.py
   cli.py
 scenes/        kitchen.xml  kitchen_rules.yaml  lab.xml  workshop.xml
@@ -533,7 +556,7 @@ tests/
 | Inverse kinematics | [mink](https://github.com/kevinzakka/mink) |
 | Rules schema | pydantic v2 |
 | CLI | typer |
-| LLM adapters | `anthropic`, `openai`, MCP Python SDK (extras: `preflight-robot[anthropic,openai,mcp]`) |
+| LLM adapters | No SDK for the tool definitions. The example agents use `anthropic` or `openai`, and the MCP server uses the MCP Python SDK (extras: `preflight-robot[anthropic,openai,mcp]`) |
 | Tests and CI | pytest, GitHub Actions on Linux and macOS |
 
 ## Implementation decisions
@@ -544,7 +567,7 @@ Four decisions made on 9 November keep v0.1 focused on judging outcomes. The rob
 | --- | --- | --- |
 | Grasping | Assumed solved on the robot's side. Preflight judges whether holding or moving an object is dangerous, not how the grasp works. | `pick` switches on a weld constraint between gripper and object, and `place` switches it off. Held objects still strike, spill and fall under real physics. Grasp failures (slips, crushing the held object) are a non-goal. |
 | Human model | MuJoCo's humanoid, `model/humanoid/humanoid.xml` in the MuJoCo repo (Apache-2.0) | Its head, torso, upper and lower arms, hands and legs are separate bodies that map onto per-region force limits, tagged `human` in the YAML. A static human has its free joint removed and stands fixed beside the table. A scripted moving hand is driven as a mocap body. |
-| Observation | Preflight writes its own `describe_scene` tool. The robot is assumed to have sensors that know the world as precisely as the simulation does. | Reads ground-truth sim state behind a `WorldStateProvider` interface, so a later connector for real robot sensors replaces the sim-backed provider without touching the firewall. Its output is attack surface, since indirect injection arrives in object labels. Open: whether it reveals hazard tags to the LLM. |
+| Observation | Preflight writes its own `describe_scene` tool. The robot is assumed to have sensors that know the world as precisely as the simulation does. | Reads ground-truth sim state behind a `WorldStateProvider` interface, so a later connector for real robot sensors replaces the sim-backed provider without touching the firewall. Its output is attack surface, since indirect injection arrives in object labels. It shows the hazard tags from the rules file, because they are trusted configuration and help the LLM plan moves that the firewall allows. |
 | Motion timing | Turning a target into a timed trajectory is the robot's job, through `RobotAdapter.compile()`. | The simulated arm uses IK via mink, then a constant-acceleration (trapezoidal) speed profile: about 30 lines, no library. MODIFY retiming stretches the profile's duration. Timing matters because speed decides `slow_near_human`, impact force and drops. |
 | Requested speed | The robot limits speed, as a real controller does. `compile()` does not refuse a high speed. | The TCP speed is capped at 1.7 m/s, then the motion is slowed until each joint is below its speed limit. The trajectory records the requested speed and the planned peak speed. The rules judge the motion that the robot will really do. |
 
@@ -579,7 +602,7 @@ Each stage of a request maps to one piece of v0.1 work. The gate needs the world
 | Check rules | One small function per safety criterion | Plain Python, about 10 to 20 lines each |
 | Decide | ALLOW, MODIFY or BLOCK, plus the message the LLM receives; MODIFY stretches the motion so it runs slower | Plain Python |
 | Execute | Run the approved trajectory in the live sim | MuJoCo |
-| Log | One JSONL line per decision; optional MP4 of blocked moves | JSON lines and ffmpeg |
+| Log | One JSONL line per decision, with the starting state and the trajectory | JSON lines |
 
 ## Testing plan
 
@@ -765,6 +788,7 @@ Open questions:
 - [ ] Is the name free? Check PyPI and GitHub for `preflight-robot` and pick a fallback.
 - [ ] Which hosted and open-weight models for the LLM-judge baseline, and what API budget for judging about 2,000 data points with each?
 - [ ] Should the agent's system prompt say it is guarded, or should the firewall stay invisible?
+- [x] Should `describe_scene` show the hazard tags to the LLM? Yes. The tags come from the trusted rules file, and with them the LLM can plan moves that the firewall allows.
 - [x] The kitchen scene starts with clearance violations: the hot cup is 22 cm and the knife is 19 cm from the left hand, and both limits are 30 cm. Should Check judge only what the action makes worse, should the scene change, or should the limits change? Check judges only what the action makes worse. A clearance violation counts only if the action moves the distance below the limit, or makes it smaller than it was at the start. The scene and the limits do not change.
 - [ ] Should the person's contact stiffness come from body-region data (ISO/TS 15066 gives stiffness values)? It sets the measured strike forces.
 - [x] How should the time budget work for long motions? The physics alone needs about 230 ms for 10.8 s of simulated time. A slow motion can pass the 400 ms rollout budget, and then the result depends on the speed of the computer. The same action can be blocked on one run and allowed on the next. `compile()` refuses a motion longer than 6 s with `CompileError`, and tells the caller to split the move. The wall-clock timeout stays only as a backstop for broken physics, at 2 s. The verdict then depends only on the physics.
