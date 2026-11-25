@@ -4,6 +4,7 @@
     decision = fw.call("move_to", {"xyz": [0.45, 0.1, 1.0], "speed": 0.5})
     decision.verdict              # Verdict.ALLOW | MODIFY | BLOCK
     decision.message()            # the tool result for the LLM
+    guarded = fw.wrap()           # the entry point for an LLM's tool calls (preflight/core/guarded.py)
 
 Decide:
     BLOCK   the call does not compile, the rollout fails, any finding has action `block`, or a repair fails
@@ -12,6 +13,8 @@ Decide:
 
 Repair in v0.1 is speed retiming only: the same path, up to 4 times slower, and never longer than the
 motion limit of the robot. Every repaired trajectory is simulated and checked again before it can run.
+
+With an `AuditLog`, each check and each call writes one record before anything runs.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from preflight.backends import MujocoBackend
 from preflight.criteria import Registry, Rules, load_rules
@@ -31,6 +34,11 @@ from preflight.robots.tabletop_arm import MAX_MOTION_S
 from .check import Checker, CheckResult, Finding
 from .verdict import Decision, Verdict
 
+if TYPE_CHECKING:
+    from preflight.audit import AuditLog
+
+    from .guarded import Guarded
+
 MAX_RETIME = 4.0
 RETIME_MARGIN = 1.05  # slow a little more than the measured excess
 RETIME_STEP = 1.5  # if a repair still violates, try this much slower
@@ -38,28 +46,46 @@ RETIME_STEP = 1.5  # if a repair still violates, try this much slower
 
 class Firewall:
     def __init__(self, rules: Rules, backend: MujocoBackend, arm: TabletopArm,
-                 registry: Registry | None = None) -> None:
+                 registry: Registry | None = None, audit: AuditLog | None = None) -> None:
         self.rules = rules
         self.backend = backend
         self.arm = arm
         self.checker = Checker(rules, registry)
         self.measure = Measure(backend.model, rules, arm)
+        self.audit = audit
 
     @classmethod
-    def from_yaml(cls, path: str | Path, registry: Registry | None = None) -> Firewall:
+    def from_yaml(cls, path: str | Path, registry: Registry | None = None, audit: AuditLog | None = None) -> Firewall:
         rules = load_rules(path, registry)
         backend = MujocoBackend(rules.scene)
-        return cls(rules, backend, TabletopArm(backend.model), registry)
+        return cls(rules, backend, TabletopArm(backend.model), registry, audit)
+
+    def wrap(self, feedback: str = "detailed") -> Guarded:
+        """The guarded robot for an LLM: tool definitions, and one function that handles each tool call."""
+        from .guarded import Guarded  # guarded.py imports this module's types
+
+        return Guarded(self, feedback)
 
     def call(self, tool: str, args: Mapping[str, Any]) -> Decision:
         """Check the call, and run it on the live robot if the verdict is ALLOW or MODIFY."""
-        decision = self.check(tool, args)
+        decision = self._decide(tool, args)
+        self._log(decision, "call", executes=decision.allowed)
         if decision.allowed:
             self.backend.execute(self.arm, decision.trajectory)
         return decision
 
     def check(self, tool: str, args: Mapping[str, Any]) -> Decision:
         """Decide on a call without running it. The live state does not change."""
+        decision = self._decide(tool, args)
+        self._log(decision, "check", executes=False)
+        return decision
+
+    def _log(self, decision: Decision, mode: str, executes: bool) -> None:
+        # The live state is still the state that the decision started from: nothing has run yet.
+        if self.audit is not None:
+            self.audit.record(decision, self.backend.model, self.backend.live, self.arm, mode, executes)
+
+    def _decide(self, tool: str, args: Mapping[str, Any]) -> Decision:
         start = time.perf_counter()
         timing: dict[str, float] = {}
 
