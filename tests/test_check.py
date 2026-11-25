@@ -11,9 +11,11 @@ from preflight.backends import MujocoBackend
 from preflight.core.check import Checker
 from preflight.criteria import REGISTRY, CriterionSpec, Need, Params, load_rules
 from preflight.criteria import checks
-from preflight.criteria.catalogue import Clearance, FragileDrop, HumanForce, SlowNearHuman, Spill, Workspace
+from preflight.criteria.catalogue import (
+    Clearance, FragileDrop, HumanForce, RobotLimits, SlowNearHuman, Spill, Workspace,
+)
 from preflight.criteria.checks import Context
-from preflight.measure import ContactFacts, Fall, Facts, Measure, Positions, Proximity, Speed, Tilt
+from preflight.measure import ContactFacts, Fall, Facts, Measure, Positions, Proximity, RobotHealth, Speed, Tilt
 from preflight.robots import TabletopArm
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -146,12 +148,87 @@ def test_workspace(tcp, held, fires):
         assert v.bodies == ("hot_cup",)
 
 
+# --- robot_limits --------------------------------------------------------------
+
+DT = 0.002  # one physics step
+N = 500
+
+
+def _robot(q=None, force=None, contacts=()):
+    """One joint with the range -1 to 1 rad, and actuators with the force range -10 to 10, for N steps."""
+    q = np.zeros(N) if q is None else np.asarray(q, float)
+    force = np.zeros((N, 1)) if force is None else np.asarray(force, float).reshape(N, -1)
+    t, a, b, f = (list(c) for c in zip(*contacts)) if contacts else ([], [], [], [])
+    n = force.shape[1]
+    return _facts(robot=RobotHealth(
+        np.arange(N) * DT, ("panda/joint4",), q[:, None], np.array([[-1.0, 1.0]]),
+        tuple(f"panda/actuator{i + 1}" for i in range(n)), force, np.tile([-10.0, 10.0], (n, 1)),
+        ContactFacts("robot", np.array(t, float), np.array(a, object), np.array(b, object), np.array(f, float)),
+    ))
+
+
+def _saturated(start, steps, value=10.0):
+    force = np.zeros(N)
+    force[start:start + steps] = value
+    return force
+
+
+@pytest.mark.parametrize("q, fires", [
+    (0.9989, False),   # 1.1 mrad from the upper end
+    (0.9991, True),    # 0.9 mrad: inside the 1 mrad margin
+    (-0.9989, False),
+    (-0.9991, True),   # the lower end
+    (1.001, True),     # past the end: MuJoCo's joint limit is soft
+])
+def test_robot_joint_margin(q, fires):
+    qs = np.zeros(N)
+    qs[200] = q
+    v = checks.robot_limits(_robot(q=qs), RobotLimits(joint_margin_rad=0.001), CTX)
+    assert (v is not None) == fires
+    if fires:
+        assert v.t == pytest.approx(200 * DT) and v.bodies == ("panda/joint4",)
+
+
+@pytest.mark.parametrize("start, steps, value, fires", [
+    (100, 25, 10.0, False),   # 0.050 s at the limit: not more than 0.05 s
+    (100, 26, 10.0, True),    # 0.052 s
+    (100, 26, -10.0, True),   # the lower end of the force range
+    (100, 200, 9.85, False),  # 98.5 % of the limit: MuJoCo clamps to the limit, so this is not saturation
+    (0, 275, 10.0, False),    # from the first row, 0.5 s more is allowed: 0.55 s
+    (0, 276, 10.0, True),
+])
+def test_robot_saturation(start, steps, value, fires):
+    facts = _robot(force=_saturated(start, steps, value))
+    v = checks.robot_limits(facts, RobotLimits(max_saturated_s=0.05), CTX)
+    assert (v is not None) == fires
+    if fires:
+        assert v.t == pytest.approx(start * DT) and v.value == pytest.approx(steps * DT)
+        assert v.bodies == ("panda/actuator1",)
+
+
+def test_robot_self_collision():
+    assert checks.robot_limits(_robot(), RobotLimits(), CTX) is None
+    v = checks.robot_limits(_robot(contacts=[(0.3, "panda/link5", "panda/hand", 12.0)]), RobotLimits(), CTX)
+    assert v.t == 0.3 and v.bodies == ("panda/link5", "panda/hand") and v.value == 12.0
+
+
+def test_robot_limits_reports_the_earliest_violation():
+    qs = np.zeros(N)
+    qs[300:] = 0.9995  # at the joint limit from t = 0.6 s
+    contact = [(0.8, "panda/link5", "panda/hand", 5.0)]
+    force = np.stack([_saturated(150, 50), _saturated(100, 50)], axis=1)  # actuator2 saturates first, at 0.2 s
+    v = checks.robot_limits(_robot(q=qs, force=force, contacts=contact), RobotLimits(), CTX)
+    assert v.t == pytest.approx(0.2) and v.bodies == ("panda/actuator2",)
+    v = checks.robot_limits(_robot(q=qs, contacts=contact), RobotLimits(), CTX)
+    assert v.t == pytest.approx(0.6) and v.bodies == ("panda/joint4",)
+
+
 # --- Engine --------------------------------------------------------------------
 
 
 def test_unchecked_criteria_are_reported():
     _, unchecked = Checker(RULES)._plan("move_to")
-    assert set(unchecked) == {"no_human_pinch", "robot_limits", "hazard_allowlist", "no_side_effects"}
+    assert set(unchecked) == {"no_human_pinch", "hazard_allowlist", "no_side_effects"}
 
 
 def test_exemption_with_an_unchecked_replacement_is_not_applied():
@@ -189,7 +266,8 @@ def test_a_check_that_fails_blocks():
                    t=T[:1], speed=Speed(np.zeros(1), np.full(1, np.nan), np.full(1, None, object)),
                    tilt={"liquid": Tilt("liquid", {})}, falls={"fragile": ()},
                    positions=Positions(("tcp",), np.array([[[0.4, 0.0, 1.0]]]), np.full((1, 3), np.nan),
-                                       np.full(1, None, object)))
+                                       np.full(1, None, object)),
+                   robot=_robot().robot)
     result = Checker(rules, registry).check(facts, "move_to")
     (finding,) = result.findings
     assert finding.violation.criterion == "broken" and finding.action == "block"

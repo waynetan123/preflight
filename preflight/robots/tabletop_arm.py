@@ -48,6 +48,9 @@ IK_DT = 0.01
 IK_MAX_ITERS = 50
 IK_POS_TOL_M = 1e-3
 IK_ROT_TOL_RAD = 1e-2
+# IK keeps each joint this far inside its range. Without it, IK can put a joint exactly at its limit, and
+# robot_limits then blocks the motion that the planner made.
+IK_JOINT_MARGIN_RAD = 0.01
 
 TOOL_ARGS = {
     "move_to": ({"xyz"}, {"speed"}),
@@ -98,7 +101,7 @@ class TabletopArm:
         cost[self._dofadr] = 1e-3
         self._posture = mink.PostureTask(model, cost=cost)
         self._posture.set_target(home)
-        self._limits = [mink.ConfigurationLimit(model)]
+        self._limits = [mink.ConfigurationLimit(model, min_distance_from_limits=IK_JOINT_MARGIN_RAD)]
 
     # --- Compile -------------------------------------------------------------
 

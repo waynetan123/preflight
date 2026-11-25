@@ -4,8 +4,8 @@
     facts = measure.facts(rollout.trace, REGISTRY.needs(rules.params))
     facts.proximity[("hot", "human")].dist_m.min()
 
-Contacts and falls use every physics step. Proximity, speed and tilt use every `sample_every`-th step
-(default 5: every 10 ms) and the last step, because each sample restores the state and runs MuJoCo.
+Contacts, falls and robot health use every physics step. Proximity, speed and tilt use every `sample_every`-th
+step (default 5: every 10 ms) and the last step, because each sample restores the state and runs MuJoCo.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from preflight.core.trace import Trace
 from preflight.criteria import Need, Rules
 from preflight.robots import TabletopArm
 
-from .facts import REPORT_RADIUS_M, ContactFacts, Fall, Facts, Positions, Proximity, Speed, Tilt
+from .facts import REPORT_RADIUS_M, ContactFacts, Fall, Facts, Positions, Proximity, RobotHealth, Speed, Tilt
 
 GRIPPER = "gripper"  # group: the hand, the fingers and the held object
 MIN_FALL_S = 0.05  # shorter losses of contact are bounces or contact noise, not falls
@@ -40,6 +40,11 @@ class Measure:
         self._robot = np.array(sorted(arm.bodies))
         self._gripper = np.array(sorted(arm.gripper_bodies))
         self._held_by_eq = {eq: name_to_id[obj] for obj, eq in arm.grasp_welds.items()}
+        # Robot health reads the arm only: the limited joints outside the gripper, and the actuators that drive them.
+        arm_body = np.isin(model.jnt_bodyid, sorted(arm.bodies - arm.gripper_bodies))
+        self._arm_joints = np.flatnonzero(arm_body & (model.jnt_limited != 0))
+        self._arm_actuators = np.flatnonzero((model.actuator_trntype == mujoco.mjtTrn.mjTRN_JOINT)
+                                             & np.isin(model.actuator_trnid[:, 0], self._arm_joints))
         self._scratch = mujoco.MjData(model)
         self._fromto = np.zeros(6)
         self._vel = np.zeros(6)
@@ -47,7 +52,7 @@ class Measure:
     def facts(self, trace: Trace, needs: Iterable[Need]) -> Facts:
         needs = set(needs)
         for need in needs:
-            if need.kind not in ("contact", "proximity", "speed", "tilt", "fall", "position"):
+            if need.kind not in ("contact", "proximity", "speed", "tilt", "fall", "position", "robot"):
                 raise ValueError(f"unknown fact kind {need.kind!r}")
         held = self._held(trace)
         rows = np.unique(np.r_[np.arange(0, len(trace), self._sample_every), len(trace) - 1])
@@ -101,6 +106,7 @@ class Measure:
             tilt=MappingProxyType({tag: Tilt(tag, MappingProxyType(v)) for tag, v in tilt.items()}),
             falls=MappingProxyType(falls),
             positions=positions,
+            robot=self._robot_health(trace) if any(n.kind == "robot" for n in needs) else None,
         )
 
     # --- Helpers -------------------------------------------------------------
@@ -153,6 +159,26 @@ class Measure:
         robot = np.where(flip, bodies[rows, 1], bodies[rows, 0])
         other = np.where(flip, bodies[rows, 0], bodies[rows, 1])
         return ContactFacts(tag, trace.t[c.step[rows]], self._names[robot], self._names[other], c.force[rows, 0])
+
+    def _robot_health(self, trace: Trace) -> RobotHealth:
+        model, joints, actuators = self.model, self._arm_joints, self._arm_actuators
+        c = trace.contacts
+        bodies = model.geom_bodyid[c.geom]  # (M, 2)
+        # The fingers are siblings, so MuJoCo does not filter their contacts; they touch when the gripper closes.
+        own = np.isin(bodies, self._robot).all(axis=1) & ~np.isin(bodies, self._gripper).all(axis=1)
+        rows = np.flatnonzero(own)
+        limited = model.actuator_forcelimited[actuators][:, None] != 0
+        return RobotHealth(
+            t=trace.t,
+            joints=tuple(model.joint(j).name for j in joints),
+            qpos=trace.qpos[:, model.jnt_qposadr[joints]],
+            q_range=model.jnt_range[joints].copy(),
+            actuators=tuple(model.actuator(a).name for a in actuators),
+            force=trace.actuator_force[:, actuators],
+            force_range=np.where(limited, model.actuator_forcerange[actuators], [-np.inf, np.inf]),
+            self_contacts=ContactFacts("robot", trace.t[c.step[rows]], self._names[bodies[rows, 0]],
+                                       self._names[bodies[rows, 1]], c.force[rows, 0]),
+        )
 
     def _falls(self, trace: Trace, held: np.ndarray, tag: str) -> tuple[Fall, ...]:
         falls = []

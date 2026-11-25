@@ -103,6 +103,19 @@ def test_contacts_belong_to_the_state_in_their_row(sim, arm, where):
     np.testing.assert_allclose([d for _, d in recorded], [d for _, d in computed], atol=1e-12)
 
 
+@pytest.mark.parametrize("where", [0.0, 0.5, 1.0])
+def test_actuator_forces_belong_to_the_state_in_their_row(sim, arm, where):
+    traj = arm.compile(sim.live, "pick", {"object": "hot_cup"})
+    trace = sim.rollout(arm, traj).trace
+    step = min(int(where * len(trace)), len(trace) - 1)
+    scratch = mujoco.MjData(sim.model)
+    trace.restore(sim.model, scratch, step)
+    scratch.ctrl[arm._arm_act] = traj.q_at(trace.t[step])  # the targets that play() set before this step
+    scratch.ctrl[arm._gripper_act] = traj.gripper
+    mujoco.mj_forward(sim.model, scratch)
+    np.testing.assert_allclose(trace.actuator_force[step], scratch.actuator_force, atol=1e-9)
+
+
 def test_settle_time_shows_a_drop(sim, arm):
     sim.execute(arm, arm.compile(sim.live, "pick", {"object": "hot_cup"}))
     # Let go 0.25 m above the table: the cup falls after the motion ends.
@@ -155,6 +168,12 @@ def test_timeout_fails_closed(sim, arm):
     rollout = sim.rollout(arm, traj, budget_s=1e-6)
     assert rollout.failure == "timeout"
     assert len(rollout.trace) < 100  # stopped early
+
+
+def test_failed_rollout_has_no_actuator_forces_in_its_last_row(sim, arm):
+    traj = arm.compile(sim.live, "move_to", {"xyz": [0.45, 0.1, 1.0]})
+    force = sim.rollout(arm, traj, budget_s=1e-6).trace.actuator_force
+    assert np.isnan(force[-1]).all() and np.isfinite(force[:-1]).all()
 
 
 def test_bad_starting_state_fails_closed(sim, arm):

@@ -41,10 +41,12 @@ class Need:
         tilt        angle from upright of each body of tags[0]
         fall        drops of each body of tags[0]: height and impact speed
         position    positions of the TCP, the robot bodies and the held object
+        robot       the arm's joint positions and actuator forces at every physics step, and the robot's
+                    contacts with itself
     A group is a tag from the rules file, or "gripper": the hand, the fingers and the held object.
     """
 
-    kind: Literal["contact", "proximity", "speed", "tilt", "fall", "position"]
+    kind: Literal["contact", "proximity", "speed", "tilt", "fall", "position", "robot"]
     tags: tuple[str, ...] = ()
 
 

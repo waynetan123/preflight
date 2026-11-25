@@ -1,4 +1,4 @@
-"""What a rollout recorded: the state at every physics step, and every contact with its force.
+"""What a rollout recorded: the state at every physics step, every contact with its force, and actuator forces.
 
 Measure reads a Trace to compute facts. `restore()` puts one recorded step back into an MjData, so
 Measure can call MuJoCo functions (distances, velocities) on it.
@@ -31,7 +31,7 @@ class Contacts:
 
 @dataclass(frozen=True)
 class Trace:
-    """Row k is the state at t[k] and the contacts in that state."""
+    """Row k is the state at t[k], and the contacts and actuator forces in that state."""
 
     trajectory: Trajectory
     t: np.ndarray  # (T,) seconds from the start; t[0] is the starting state
@@ -39,6 +39,7 @@ class Trace:
     qvel: np.ndarray  # (T, nv)
     eq_active: np.ndarray  # (T, neq) bool
     contacts: Contacts
+    actuator_force: np.ndarray  # (T, nu) after MuJoCo clamps it to forcerange; NaN in the last row of a failed rollout
 
     def __len__(self) -> int:
         return len(self.t)
@@ -54,11 +55,11 @@ class Trace:
 
 
 class TraceRecorder:
-    """Collects one row per state: its time, qpos, qvel, active welds and contacts.
+    """Collects one row per state: its time, qpos, qvel, active welds, contacts and actuator forces.
 
     After mj_step, MjData holds the new qpos and qvel, but its contacts and forces belong to the state
-    before the step. So `step()` gives the contacts to the previous row, then adds a row for the new state.
-    `finish()` computes the contacts of the last state.
+    before the step. So `step()` gives the contacts and actuator forces to the previous row, then adds a row
+    for the new state. `finish()` computes the contacts and actuator forces of the last state.
     """
 
     def __init__(self, model: mujoco.MjModel) -> None:
@@ -69,17 +70,20 @@ class TraceRecorder:
         self._eq: list[np.ndarray] = []
         self._contacts: list[tuple[np.ndarray, ...]] = []  # one tuple of arrays per row that has contacts
         self._force = np.zeros(6)
+        self._actuator_force: list[np.ndarray] = []
 
     def start(self, t: float, data: mujoco.MjData) -> None:
         self._row(t, data)
 
     def step(self, t: float, data: mujoco.MjData) -> None:
         self._record_contacts(data)
+        self._actuator_force.append(data.actuator_force.copy())
         self._row(t, data)
 
     def finish(self, data: mujoco.MjData) -> None:
         mujoco.mj_forward(self._model, data)
         self._record_contacts(data)
+        self._actuator_force.append(data.actuator_force.copy())
 
     def _row(self, t: float, data: mujoco.MjData) -> None:
         self._t.append(t)
@@ -102,6 +106,10 @@ class TraceRecorder:
         parts = list(zip(*self._contacts)) or [[np.zeros(0, int)], [np.zeros((0, 2), int)], [np.zeros(0)],
                                                 [np.zeros((0, 3))], [np.zeros((0, 3))]]
         contacts = Contacts(*(np.concatenate(p) for p in parts))
+        # A failed rollout does not call finish(), so its last row has no actuator forces.
+        actuator_force = np.full((len(self._t), self._model.nu), np.nan)
+        if self._actuator_force:
+            actuator_force[:len(self._actuator_force)] = self._actuator_force
         return Trace(
             trajectory=trajectory,
             t=np.array(self._t),
@@ -109,4 +117,5 @@ class TraceRecorder:
             qvel=np.array(self._qvel),
             eq_active=np.array(self._eq),
             contacts=contacts,
+            actuator_force=actuator_force,
         )

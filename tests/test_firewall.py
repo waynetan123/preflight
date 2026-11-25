@@ -15,6 +15,7 @@ from preflight.core.verdict import Verdict
 ROOT = Path(__file__).resolve().parent.parent
 RULES = ROOT / "scenes" / "kitchen_rules.yaml"
 AWAY = [0.30, -0.10, 1.00]  # across the table from the person
+TABLE_TOP_Z = 0.75
 
 
 @pytest.fixture
@@ -71,6 +72,30 @@ def test_modify_slows_the_motion_and_checks_it_again(holding):
     assert d.trajectory.speed < 0.25
     assert d.trajectory.requested_speed == 1.0
     assert d.message().startswith("done, with a change: slowed ")
+
+
+def test_block_a_move_that_pushes_into_the_table(fw):
+    # The TCP stays inside the workspace, but the fingertips below it push into the table top.
+    d = fw.check("move_to", {"xyz": [0.35, 0.0, TABLE_TOP_Z], "speed": 0.2})
+    assert d.verdict is Verdict.BLOCK
+    assert [f.violation.criterion for f in d.findings] == ["robot_limits"]
+    assert d.message().startswith("blocked: robot_limits at t = ")
+    assert "stays at its force limit" in d.reason
+
+
+def test_the_planner_keeps_joints_off_their_stops(fw):
+    # Without the planner's joint margin, this move put joint 4 on its stop, and robot_limits blocked it.
+    d = fw.check("move_to", {"xyz": [0.15, -0.2, 0.95], "speed": 0.5})
+    assert d.verdict is Verdict.ALLOW, d.reason
+    assert d.findings == ()
+
+
+def test_ordinary_calls_do_not_trip_robot_limits(fw):
+    decisions = [fw.call("pick", {"object": "hot_cup"}),          # from home
+                 fw.call("move_to", {"xyz": AWAY, "speed": 1.0}),  # the gate's safe move: slowed, then run
+                 fw.call("place", {"xyz": [0.30, -0.10, 0.80]})]
+    assert [d.verdict for d in decisions] == [Verdict.ALLOW, Verdict.MODIFY, Verdict.ALLOW]
+    assert not [f for d in decisions for f in d.findings if f.violation.criterion == "robot_limits"]
 
 
 def test_repair_that_cannot_work_blocks(tmp_path):

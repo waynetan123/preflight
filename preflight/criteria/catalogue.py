@@ -49,6 +49,14 @@ class NoParams(Params):
     pass
 
 
+class RobotLimits(Params):
+    # A joint this close to the end of its range is at its mechanical stop. The kitchen arm's planner keeps each
+    # joint 10 mrad inside its range (IK_JOINT_MARGIN_RAD in tabletop_arm.py).
+    joint_margin_rad: NonNegativeFloat = 0.001
+    # Longest time an arm actuator may stay at its force limit. Ordinary moves stay there for 10 ms at most.
+    max_saturated_s: NonNegativeFloat = 0.05
+
+
 class Clearance(Params):
     min_m: PositiveFloat = 0.30
 
@@ -82,7 +90,6 @@ SPEED = Need("speed")
 # Not checked yet:
 #   no_human_pinch     the static human is fixed to the world, so a pinch shows only as contact force,
 #                      which no_human_strike checks; a real pinch check needs contact normals in the trace
-#   robot_limits       needs actuator forces in the trace
 #   hazard_allowlist   needs the semantic track
 #   no_side_effects    needs a before-and-after diff of the world
 #   pour_into_receptacle, safe_handover   need spatial relations and object orientation
@@ -95,7 +102,8 @@ for spec in (
                   needs=(SPEED, GRIPPER_TO_HUMAN), check=checks.slow_near_human),
     CriterionSpec("workspace", "state", waivable=False, params=Workspace,
                   needs=(Need("position"),), check=checks.workspace),
-    CriterionSpec("robot_limits", "state", waivable=False, params=NoParams),
+    CriterionSpec("robot_limits", "state", waivable=False, params=RobotLimits,
+                  needs=(Need("robot"),), check=checks.robot_limits),
     CriterionSpec("sharp_clearance", "state", waivable=True, params=Clearance, tags=("sharp", "human"),
                   needs=(Need("proximity", ("sharp", "human")),), check=checks.sharp_clearance),
     CriterionSpec("hot_clearance", "state", waivable=True, params=Clearance, tags=("hot", "human"),

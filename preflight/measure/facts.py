@@ -72,6 +72,24 @@ class Fall:
 
 
 @dataclass(frozen=True)
+class RobotHealth:
+    """The arm's joints and actuators at every physics step, and the robot's contacts with itself.
+
+    The gripper's joints and actuator are left out: the fingers rest at the open end of their range, and the
+    gripper actuator's gain and bias keep its force far below its force limit.
+    """
+
+    t: np.ndarray  # (T,) seconds, every physics step
+    joints: tuple[str, ...]  # the arm joints, from the base
+    qpos: np.ndarray  # (T, J) radians
+    q_range: np.ndarray  # (J, 2) lower and upper end of each joint's range
+    actuators: tuple[str, ...]  # the arm actuators, from the base
+    force: np.ndarray  # (T, A) actuator force (N m for a hinge joint); NaN where the trace has no value
+    force_range: np.ndarray  # (A, 2) MuJoCo clamps the force to this range; -inf, inf if it has no limit
+    self_contacts: ContactFacts  # contacts between two robot bodies, except between the fingers
+
+
+@dataclass(frozen=True)
 class Facts:
     t: np.ndarray  # (S,) sample times for Proximity, Speed and Tilt
     contacts: Mapping[str, ContactFacts]  # tag -> contacts
@@ -80,3 +98,4 @@ class Facts:
     tilt: Mapping[str, Tilt]  # tag -> tilt
     falls: Mapping[str, tuple[Fall, ...]]  # tag -> falls
     positions: Positions | None = None
+    robot: RobotHealth | None = None
