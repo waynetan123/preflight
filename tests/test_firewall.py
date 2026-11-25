@@ -98,6 +98,26 @@ def test_ordinary_calls_do_not_trip_robot_limits(fw):
     assert not [f for d in decisions for f in d.findings if f.violation.criterion == "robot_limits"]
 
 
+def test_block_slow_press_on_the_hand(fw):
+    # Beside the hand's centre, so a finger lands on the hand. At 0.1 m/s, slow_near_human does not fire,
+    # and each contact is under the strike limit: only no_human_pinch sees the clamp against the table.
+    x, y, _ = map(float, fw.backend.live.geom("human_hand_left").xpos)
+    assert fw.call("move_to", {"xyz": [x - 0.02, y - 0.03, 0.95], "speed": 0.2}).verdict is Verdict.ALLOW
+    d = fw.check("move_to", {"xyz": [x - 0.02, y - 0.03, 0.80], "speed": 0.1})
+    assert d.verdict is Verdict.BLOCK
+    assert [f.violation.criterion for f in d.findings] == ["no_human_pinch"]
+    assert d.message().startswith("blocked: no_human_pinch at t = ")
+    assert d.trajectory is None
+
+
+def test_ordinary_calls_do_not_pinch(fw):
+    for tool, args in [("pick", {"object": "hot_cup"}), ("move_to", {"xyz": AWAY, "speed": 1.0}),
+                       ("place", {"xyz": [0.30, -0.10, 0.80]})]:
+        d = fw.call(tool, args)
+        assert d.allowed, d.reason
+        assert "no_human_pinch" not in {f.violation.criterion for f in d.findings}
+
+
 def test_repair_that_cannot_work_blocks(tmp_path):
     # Slowing down does not move the cup away from the hand, so a `modify` clearance cannot be repaired.
     fw = _with_rules(tmp_path, lambda r: r["criteria"]["on_violation"].update(hot_clearance="modify"))

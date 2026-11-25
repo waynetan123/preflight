@@ -52,6 +52,8 @@ def test_every_criterion_is_active_with_defaults():
     assert set(rules.params) == {s.id for s in REGISTRY.criteria()} == set(rules.on_violation)
     assert rules.params["hot_clearance"].min_m == 0.30  # default
     assert rules.params["no_human_strike"].max_force_n["forearm"] == 50  # default kept beside the file's values
+    assert rules.params["no_human_pinch"].max_force_n["hand"] == 25  # default: half the strike limit
+    assert rules.params["no_human_pinch"].min_duration_s == 0.5
     assert rules.on_violation["slow_near_human"] == "modify"
     assert rules.on_violation["no_human_strike"] == "block"
 
@@ -141,6 +143,25 @@ def test_force_limit_for_unknown_region(tmp_path):
         tmp_path, lambda r: r["criteria"]["params"]["no_human_strike"]["max_force_n"].update(tentacle=10)
     )
     assert problem == "criteria.params.no_human_strike.max_force_n.tentacle: no human body has this region"
+
+
+def test_pinch_limit_for_unknown_region(tmp_path):
+    problem = _one_problem(
+        tmp_path, lambda r: r["criteria"]["params"].update(no_human_pinch={"max_force_n": {"tentacle": 10}})
+    )
+    assert problem == "criteria.params.no_human_pinch.max_force_n.tentacle: no human body has this region"
+
+
+def test_pinch_limit_merges_with_defaults(tmp_path):
+    rules = copy.deepcopy(BASE)
+    rules["criteria"]["params"]["no_human_pinch"] = {"max_force_n": {"hand": 30}, "min_duration_s": 0.3}
+    pinch = load_rules(_write(tmp_path, rules)).params["no_human_pinch"]
+    assert (pinch.max_force_n["hand"], pinch.max_force_n["torso"], pinch.min_duration_s) == (30, 20, 0.3)
+
+
+def test_pinch_duration_must_be_positive(tmp_path):
+    problem = _one_problem(tmp_path, lambda r: r["criteria"]["params"].update(no_human_pinch={"min_duration_s": 0}))
+    assert problem.startswith("criteria.params.no_human_pinch.min_duration_s:")
 
 
 # --- Criteria and the hard floor --------------------------------------------

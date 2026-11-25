@@ -23,6 +23,8 @@ class ContactFacts:
     robot_body: np.ndarray  # (M,) body name on the robot side: a robot body or the held object
     other_body: np.ndarray  # (M,) body name with the tag
     force_n: np.ndarray  # (M,) normal force
+    other_fixed: np.ndarray | None = None  # (M,) True if the tag body is fixed to the world, so it cannot move away
+    dt: float | None = None  # seconds between physics steps
 
 
 @dataclass(frozen=True)

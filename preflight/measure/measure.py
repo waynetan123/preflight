@@ -41,6 +41,7 @@ class Measure:
         collides = (model.geom_contype | model.geom_conaffinity) != 0
         self._geoms = [np.flatnonzero((model.geom_bodyid == b) & collides) for b in range(model.nbody)]
         self._robot = np.array(sorted(arm.bodies))
+        self._fixed = model.body_weldid == 0  # no joint and no mocap body between it and the world
         self._gripper = np.array(sorted(arm.gripper_bodies))
         self._held_by_eq = {eq: name_to_id[obj] for obj, eq in arm.grasp_welds.items()}
         # Robot health reads the arm only: the limited joints outside the gripper, and the actuators that drive them.
@@ -166,7 +167,8 @@ class Measure:
         flip = backward[rows]
         robot = np.where(flip, bodies[rows, 1], bodies[rows, 0])
         other = np.where(flip, bodies[rows, 0], bodies[rows, 1])
-        return ContactFacts(tag, trace.t[c.step[rows]], self._names[robot], self._names[other], c.force[rows, 0])
+        return ContactFacts(tag, trace.t[c.step[rows]], self._names[robot], self._names[other], c.force[rows, 0],
+                            self._fixed[other], self.model.opt.timestep)
 
     def _robot_health(self, trace: Trace) -> RobotHealth:
         model, joints, actuators = self.model, self._arm_joints, self._arm_actuators

@@ -28,6 +28,18 @@ class HumanForce(Params):
     max_force_n: ForceLimits = dict(PLACEHOLDER_FORCE_N)
 
 
+# ISO/TS 15066 allows a transient contact twice the force of a quasi-static (clamping) contact.
+PLACEHOLDER_PINCH_FORCE_N = {region: force / 2 for region, force in PLACEHOLDER_FORCE_N.items()}
+
+
+class HumanPinch(HumanForce):
+    """Limits for a clamped body. The loader checks `max_force_n` as it does for every HumanForce."""
+
+    max_force_n: ForceLimits = dict(PLACEHOLDER_PINCH_FORCE_N)
+    # ISO/TS 15066 practice: a contact longer than 0.5 s is quasi-static, because the person cannot pull away.
+    min_duration_s: PositiveFloat = 0.5
+
+
 class SlowNearHuman(Params):
     radius_m: PositiveFloat = 0.5
     max_speed_mps: PositiveFloat = 0.25
@@ -88,15 +100,14 @@ GRIPPER_TO_HUMAN = Need("proximity", ("gripper", "human"))
 SPEED = Need("speed")
 
 # Not checked yet:
-#   no_human_pinch     the static human is fixed to the world, so a pinch shows only as contact force,
-#                      which no_human_strike checks; a real pinch check needs contact normals in the trace
 #   hazard_allowlist   needs the semantic track
 #   pour_into_receptacle, safe_handover   need spatial relations and object orientation
 for spec in (
     CriterionSpec("no_human_strike", "state", waivable=False, params=HumanForce, tags=("human",),
                   needs=(HUMAN_CONTACT,), check=checks.no_human_strike),
-    CriterionSpec("no_human_pinch", "state", waivable=False, params=HumanForce, tags=("human",),
-                  needs=(HUMAN_CONTACT,)),
+    # Checks only human bodies fixed to the world; a movable human needs contact normals in the trace.
+    CriterionSpec("no_human_pinch", "state", waivable=False, params=HumanPinch, tags=("human",),
+                  needs=(HUMAN_CONTACT,), check=checks.no_human_pinch),
     CriterionSpec("slow_near_human", "state", waivable=False, params=SlowNearHuman, tags=("human",),
                   needs=(SPEED, GRIPPER_TO_HUMAN), check=checks.slow_near_human),
     CriterionSpec("workspace", "state", waivable=False, params=Workspace,
