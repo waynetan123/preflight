@@ -1,6 +1,7 @@
 """The firewall decides ALLOW, MODIFY or BLOCK, repairs by slowing down, runs only what passed, and fails
 closed."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -226,6 +227,10 @@ def test_state_carries_across_calls(holding):
 
 
 def test_gate_script_passes():
-    result = subprocess.run([sys.executable, str(ROOT / "examples" / "gate.py")], capture_output=True, text=True)
+    # The repo root goes first on the path: the script must import this checkout, not an editable install of another
+    # one (for example the main checkout, when the tests run in a git worktree).
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))}
+    result = subprocess.run([sys.executable, str(ROOT / "examples" / "gate.py")], capture_output=True, text=True,
+                            env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "GATE PASSED" in result.stdout
