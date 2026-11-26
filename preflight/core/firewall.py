@@ -15,11 +15,18 @@ Repair in v0.1 is speed retiming only: the same path, up to 4 times slower, and 
 motion limit of the robot. Every repaired trajectory is simulated and checked again before it can run.
 
 With an `AuditLog`, each check and each call writes one record before anything runs.
+
+With `video_dir`, each BLOCK of a simulated motion also writes an MP4 of that motion to the folder (it needs the
+extra `preflight-robot[video]`). The firewall renders it after the decision, from a copy of the starting state, so
+the time is not in `Decision.timing_ms`. With an audit log, the file is `record-<id>.mp4`, and the record gives its
+path. If the render fails, the firewall gives a `RuntimeWarning`, the record has no video, and the BLOCK stays.
 """
 
 from __future__ import annotations
 
 import time
+import uuid
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -46,19 +53,22 @@ RETIME_STEP = 1.5  # if a repair still violates, try this much slower
 
 class Firewall:
     def __init__(self, rules: Rules, backend: MujocoBackend, arm: TabletopArm,
-                 registry: Registry | None = None, audit: AuditLog | None = None) -> None:
+                 registry: Registry | None = None, audit: AuditLog | None = None,
+                 video_dir: str | Path | None = None) -> None:
         self.rules = rules
         self.backend = backend
         self.arm = arm
         self.checker = Checker(rules, registry)
         self.measure = Measure(backend.model, rules, arm)
         self.audit = audit
+        self.video_dir = None if video_dir is None else Path(video_dir)
 
     @classmethod
-    def from_yaml(cls, path: str | Path, registry: Registry | None = None, audit: AuditLog | None = None) -> Firewall:
+    def from_yaml(cls, path: str | Path, registry: Registry | None = None, audit: AuditLog | None = None,
+                  video_dir: str | Path | None = None) -> Firewall:
         rules = load_rules(path, registry)
         backend = MujocoBackend(rules.scene)
-        return cls(rules, backend, TabletopArm(backend.model), registry, audit)
+        return cls(rules, backend, TabletopArm(backend.model), registry, audit, video_dir)
 
     def wrap(self, feedback: str = "detailed") -> Guarded:
         """The guarded robot for an LLM: tool definitions, and one function that handles each tool call."""
@@ -82,9 +92,28 @@ class Firewall:
 
     def _log(self, decision: Decision, mode: str, executes: bool) -> None:
         # The live state is still the state that the decision started from: nothing has run yet.
+        video = self._video(decision)
         if self.audit is not None:
             self.audit.record(decision, self.backend.model, self.backend.live, self.arm, mode, executes,
-                              scene=self.rules.scene)
+                              scene=self.rules.scene, video=video)
+
+    def _video(self, decision: Decision) -> Path | None:
+        """The MP4 of a blocked motion, or None if videos are off, nothing was simulated, or the render failed."""
+        if self.video_dir is None or decision.allowed or decision.checked is None:
+            return None
+        from preflight.audit.video import render  # imageio loads only when a video is written
+
+        name = f"record-{self.audit.next_id}" if self.audit is not None else f"block-{uuid.uuid4().hex[:12]}"
+        path = self.video_dir / f"{name}.mp4"
+        try:
+            self.video_dir.mkdir(parents=True, exist_ok=True)
+            return render(self.backend.model, self.backend.live, self.arm, decision.checked, path,
+                          settle_s=self.rules.settle_s)
+        except Exception as exc:  # noqa: BLE001  a video is evidence, not a check: the BLOCK stays
+            warnings.warn(f"preflight: no video of the blocked {decision.tool}: {type(exc).__name__}: {exc}",
+                          RuntimeWarning, stacklevel=3)
+            path.unlink(missing_ok=True)
+            return None
 
     def _decide(self, tool: str, args: Mapping[str, Any]) -> Decision:
         start = time.perf_counter()
