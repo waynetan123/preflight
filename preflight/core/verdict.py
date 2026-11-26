@@ -27,6 +27,9 @@ class Decision:
     trajectory: Trajectory | None
     findings: tuple[Finding, ...]  # from the first check
     reason: str  # one line: why this verdict
+    # The trajectory of the last simulation, which decided the verdict. It is `trajectory` if the verdict is not
+    # BLOCK. On BLOCK it is the motion that was blocked, which does not run. None if the call did not compile.
+    checked: Trajectory | None = None
     retime_factor: float = 1.0  # > 1 if MODIFY slowed the motion
     failure: str | None = None  # compile | a rollout failure reason, if the check could not run
     unchecked: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
