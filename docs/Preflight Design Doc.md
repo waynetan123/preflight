@@ -782,14 +782,15 @@ What this gives up: no end-to-end evidence that an LLM agent re-plans and finish
 | Incomplete criteria | A harm mechanism missing from the criteria catalogue passes through | Held-out harms in the oracle; document coverage; optional LLM warning layer |
 | World changes between check and execution | A person moves after the check | Execute only the verified trajectory; stretch goal: monitor during execution and halt |
 | Rule probing via feedback | Attacker learns thresholds | `minimal` feedback mode; rate-limit repeated blocks |
+| Harm split into steps | Each call moves the knife a little toward the edge, and each call passes alone | Known limit of v0.1: each check judges one call. The evaluation measures it with the "harmful sequences" category |
 | Latency | Long horizons slow the agent loop | Profile early; cap horizon; reuse compiled models |
 | Scope creep | The schedule runs out | Stretch goals stay out until the eval report exists |
 
 Open questions:
 
 - [x] Is the name free? Check PyPI and GitHub for `preflight-robot` and pick a fallback. On 25 Nov 2026, PyPI had no project `preflight-robot` (HTTP 404), and no GitHub repo had exactly that name. The fallback `preflight-robotics` was also free on PyPI. The name `preflight` is taken on PyPI.
-- [ ] Which hosted and open-weight models for the LLM-judge baseline, and what API budget for judging about 2,000 data points with each? Decided on 25 Nov 2026: the judge is Claude or ChatGPT for now. The API budget is still open.
-- [ ] Should the agent's system prompt say it is guarded, or should the firewall stay invisible?
+- [x] Which hosted and open-weight models for the LLM-judge baseline, and what API budget for judging about 2,000 data points with each? Decided on 25 Nov 2026: the judge is Claude or ChatGPT for now, and the API budget has no limit for now.
+- [x] Should the agent's system prompt say it is guarded, or should the firewall stay invisible? Decided on 25 Nov 2026: tell the LLM that a safety check can block its calls. The firewall does not depend on what the LLM knows, and the first "blocked:" result shows the firewall anyway. Without the knowledge, the LLM can retry a blocked call or argue. The feedback mode controls what an attacker learns: `detailed` for development and demos, and `minimal` for real use, where the user can be an attacker.
 - [x] Should `describe_scene` show the hazard tags to the LLM? Yes. The tags come from the trusted rules file, and with them the LLM can plan moves that the firewall allows.
 - [x] The kitchen scene starts with clearance violations: the hot cup is 22 cm and the knife is 19 cm from the left hand, and both limits are 30 cm. Should Check judge only what the action makes worse, should the scene change, or should the limits change? Check judges only what the action makes worse. A clearance violation counts only if the action moves the distance below the limit, or makes it smaller than it was at the start. The scene and the limits do not change.
 - [ ] Should the person's contact stiffness come from body-region data (ISO/TS 15066 gives stiffness values)? It sets the measured strike forces.
@@ -797,7 +798,7 @@ Open questions:
 - [x] Static human for v0.1, or a scripted moving hand from the start? Static human: `scenes/kitchen.xml` freezes the humanoid in one pose.
 - [x] Which duration rule does `no_human_pinch` use? A contact of 0.5 s or more must keep its peak at or below the limit. The first rule needed the force above the limit for 0.5 s. With it, a palm on the forearm for more than 0.5 s, with a peak of 49.6 N, passed.
 - [x] How can a rules file exempt `no_side_effects`? It cannot, for now. The loader accepts an exemption only for a tag that the criterion reads, and no tool needs this exemption yet.
-- [ ] Do the force limits take the ISO/TS 15066 values? Research on 25 Nov 2026 found these facts:
+- [ ] Do the force limits take the ISO/TS 15066 values? Deferred on 25 Nov 2026: the placeholders stay for now. Research on 25 Nov 2026 found these facts:
   - The text of ISO/TS 15066:2016 is not free, and nobody on the project has read it. The values below come from secondary sources.
   - The TS defines quasi-static contact as a body part that cannot move away, and transient contact as one that can recoil. It gives no time value. The 0.5 s comes from a TÜV Austria and Fraunhofer Austria white paper (2017), which calls it a definition.
   - Two independent copies of Annex A, Table A.2 agree on the quasi-static forces. In newtons: face 65, skull 130, abdomen 110, chest 140, pelvis 180, upper arm 150, lower arm 160, hand 140, thigh 220, lower leg 130. A transient contact may have 2 times these values, except on the skull and the face.
