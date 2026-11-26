@@ -8,9 +8,8 @@ Each subcommand imports its module only when it runs, so `preflight --help` work
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 import typer
 
@@ -26,7 +25,7 @@ def replay(
     """Open one decision of an audit log in the MuJoCo viewer."""
     from preflight.audit.replay import replay as run
     try:
-        _run(run, log, record_id)
+        run(log, record_id)
     except (KeyError, ValueError) as exc:  # no record with this id, or a record without a scene file
         typer.echo(f"error: {exc.args[0]}", err=True)
         raise typer.Exit(1) from None
@@ -46,12 +45,4 @@ def serve(
         typer.echo("error: give --mcp. It is the only server in v0.1.", err=True)
         raise typer.Exit(2)
     from preflight.adapters.mcp_server import serve as run
-    _run(run, rules, feedback, audit)
-
-
-def _run(command: Callable[..., Any], *args: Any) -> None:
-    try:
-        command(*args)
-    except NotImplementedError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1) from None
+    run(rules, feedback, audit)
