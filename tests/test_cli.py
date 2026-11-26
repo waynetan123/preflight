@@ -1,4 +1,4 @@
-"""The `preflight` command. `replay` and `serve --mcp` are placeholders until their modules are built."""
+"""The `preflight` command. `serve --mcp` is a placeholder until its module is built."""
 
 from pathlib import Path
 
@@ -28,12 +28,12 @@ def test_replay_needs_an_existing_log(tmp_path):
     assert runner.invoke(app, ["replay", str(tmp_path / "missing.jsonl"), "--id", "1"]).exit_code == 2
 
 
-def test_replay_is_not_built_yet(tmp_path):
+def test_replay_of_an_empty_log_fails(tmp_path):
     log = tmp_path / "audit.jsonl"
     log.touch()
     result = runner.invoke(app, ["replay", str(log), "--id", "1"])
     assert result.exit_code == 1
-    assert "preflight replay is not built yet" in result.output
+    assert "no record with id 1" in result.output
 
 
 def test_serve_needs_mcp():

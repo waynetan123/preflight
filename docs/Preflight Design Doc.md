@@ -447,7 +447,7 @@ Feedback has two modes. `detailed` (default for development) returns the rule an
 - **Feedback.** `Decision.message()` gives the tool result. `detailed` gives the rule, the value, the limit and the time. `minimal` gives only "done" or "blocked by safety policy".
 - **Unchecked criteria.** `Decision.unchecked` lists the criteria that could not be checked. They do not change the verdict in v0.1.
 
-Audit log: one JSONL record for each decision. A record has the time, the session, the tool call, the verdict, the findings, the starting state and the checked trajectory. It also has a SHA-256 hash of the state and of the trajectory. The firewall writes the record before the robot moves. `preflight replay audit.jsonl --id 42` will reopen any decision in the MuJoCo viewer. "Integrate in v0.1" gives the details.
+Audit log: one JSONL record for each decision. A record has the time, the session, the tool call, the verdict, the findings, the starting state and the checked trajectory. It also has a SHA-256 hash of the state and of the trajectory. The firewall writes the record before the robot moves. The command `preflight replay audit.jsonl --id 42` opens any decision in the MuJoCo viewer and plays its checked trajectory. "Integrate in v0.1" gives the details.
 
 ## Integration API
 
@@ -496,11 +496,15 @@ result.findings     # each Finding has a Violation: criterion, t, value, limit, 
 - **Record first.** The firewall writes the record before the robot moves. If the write fails, the call raises an error and the robot does not move.
 - **Command.** `preflight` in `preflight/cli.py` has two subcommands: `replay LOG --id N` and `serve --mcp --rules RULES`. `serve` also takes `--feedback` and `--audit`.
   - Each subcommand imports its module only when it runs. Thus `preflight --help` works without the extras.
-  - `preflight/audit/replay.py` and `preflight/adapters/mcp_server.py` are placeholders now. Each subcommand stops with "not built yet" and exit code 1.
+  - `preflight/adapters/mcp_server.py` is a placeholder now. `serve --mcp` stops with "not built yet" and exit code 1.
   - The extra `mcp` installs the MCP Python SDK. The extra `video` installs imageio and its own ffmpeg, for the MP4 of blocked moves.
+- **Replay.** `preflight replay LOG --id N` (`preflight/audit/replay.py`) prints the decision and its findings. Then it opens the MuJoCo viewer at the starting state of the record.
+  - The viewer plays the checked trajectory in real time. On BLOCK, this is the blocked motion. Then the arm holds its last targets until the window closes.
+  - A control callback sets the targets at each physics step, so plain `python` works on macOS. In the viewer, a weld switches one step (2 ms) later than in Simulate. The function `Playback.step()` has no delay. A test shows that it gives the same state as Simulate.
+  - Backspace in the viewer goes to the default pose of the model. To see the decision again, run the command again.
 - **Not in v0.1 yet.**
   - There is no rollout seed, because v0.1 runs one rollout with no random changes.
-  - There is no MP4 of blocked moves, no `preflight replay` and no MCP server. The command, the extras and `load()` are ready for them.
+  - There is no MP4 of blocked moves and no MCP server. The command, the extras and `load()` are ready for them.
   - `fw.wrap()` takes no robot argument, because the firewall already holds its arm.
 
 ## Evaluation
