@@ -25,7 +25,11 @@ def replay(
 ) -> None:
     """Open one decision of an audit log in the MuJoCo viewer."""
     from preflight.audit.replay import replay as run
-    _run(run, log, record_id)
+    try:
+        _run(run, log, record_id)
+    except (KeyError, ValueError) as exc:  # no record with this id, or a record without a scene file
+        typer.echo(f"error: {exc.args[0]}", err=True)
+        raise typer.Exit(1) from None
 
 
 @app.command()

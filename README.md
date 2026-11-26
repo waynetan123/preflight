@@ -27,6 +27,16 @@ On macOS:
 
 Third-party models in `assets/` are listed in [assets/VENDORED.md](assets/VENDORED.md).
 
+## Replay
+
+The firewall can write each decision to an audit log (`AuditLog` in `preflight/audit/log.py`). To see one decision again in the MuJoCo viewer:
+
+```sh
+.venv/bin/preflight replay audit.jsonl --id 2
+```
+
+The command prints the verdict and the findings. Then it plays the checked trajectory. For a blocked call, this is the motion that did not run.
+
 ## License
 
 Apache-2.0
