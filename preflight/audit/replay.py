@@ -116,5 +116,12 @@ def replay(log: Path, record_id: int) -> None:
 
 def _finding(f: Mapping[str, Any]) -> str:
     when = "" if f.get("t") is None else f" at t = {f['t']:.2f} s"
-    numbers = ", ".join(f"{k} {f[k]:.3g}" for k in ("value", "limit") if f.get(k) is not None)
+    keys = [k for k in ("value", "limit") if f.get(k) is not None]
+    digits = 3
+    if len(keys) == 2 and f["value"] != f["limit"]:
+        # A finding is the first sample over the limit, so the value is often near the limit. Add digits until
+        # the two numbers differ, so that the line shows the violation.
+        while f"{f['value']:.{digits}g}" == f"{f['limit']:.{digits}g}":
+            digits += 1
+    numbers = ", ".join(f"{k} {f[k]:.{digits}g}" for k in keys)
     return f"{f['criterion']} ({f['action']}){when}" + (f": {numbers}" if numbers else "")

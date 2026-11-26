@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from preflight.audit import AuditLog, load, read_record
-from preflight.audit.replay import Playback, summary
+from preflight.audit.replay import Playback, _finding, summary
 from preflight.cli import app
 from preflight.core.firewall import Firewall
 from preflight.robots import TabletopArm
@@ -91,8 +91,9 @@ def test_summary_of_a_block(log):
     text = summary(read_record(log, 2))
     assert "Record 2 of session test" in text
     assert "Verdict: BLOCK: hot_clearance at t = " in text
-    # The cup started inside the 30 cm limit, so the limit of the finding is the start distance.
-    assert "- hot_clearance (block) at t = 0.14 s: value 0.222, limit 0.222" in text
+    # The cup started inside the 30 cm limit, so the limit of the finding is 5 mm closer than the start. The value
+    # is only 0.13 mm under it, so the line needs 4 digits to show that the value is below the limit.
+    assert "- hot_clearance (block) at t = 0.14 s: value 0.2217, limit 0.2219" in text
     assert "- no_human_strike (block) at t = 0.69 s: value " in text
     assert "Executed on the robot: no" in text
     assert "the blocked motion, which did not run" in text
@@ -144,3 +145,13 @@ def test_replay_of_an_unknown_id_fails(log):
     result = runner.invoke(app, ["replay", str(log), "--id", "99"])
     assert result.exit_code == 1
     assert "no record with id 99" in result.output
+
+
+def test_a_finding_has_enough_digits_to_show_the_violation():
+    def line(value, limit):
+        return _finding({"criterion": "c", "action": "block", "t": 1.0, "value": value, "limit": limit})
+
+    assert line(0.2217488773009579, 0.22187512314470645).endswith("value 0.2217, limit 0.2219")
+    assert line(96.43122443215711, 50.0).endswith("value 96.4, limit 50")  # 3 digits when they already differ
+    assert line(0.25, 0.25).endswith("value 0.25, limit 0.25")  # equal numbers stay at 3 digits
+    assert line(0.5, None).endswith("value 0.5")
