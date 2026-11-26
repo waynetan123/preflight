@@ -494,6 +494,11 @@ result.findings     # each Finding has a Violation: criterion, t, value, limit, 
   - `load(read_record(path, id))` gives a new model and data at the starting state of the record, and the checked trajectory. A test runs this trajectory. The final state matches the live robot to 1e-9.
   - A `pick` record is about 37 KB, because it holds the full trajectory.
 - **Record first.** The firewall writes the record before the robot moves. If the write fails, the call raises an error and the robot does not move.
+- **Video.** `Firewall(..., video_dir=...)` writes an MP4 of each blocked motion. `preflight/audit/video.py` plays `Decision.checked` again from a copy of the starting state. It uses the `overview` camera at 640x360 and 30 fps.
+  - The firewall renders the video after the decision. Thus the time is not in `Decision.timing_ms`. On a laptop, the video of a 1.9 s motion takes about 1 s.
+  - With an audit log, the file is `record-<id>.mp4`, and the `video` field of the record gives its path. Without a log, the file is `block-<random>.mp4`.
+  - If the render fails, the firewall gives a `RuntimeWarning`, and the BLOCK stays. The record then has no video.
+  - `render_record()` makes the same video from a record of the log.
 - **Command.** `preflight` in `preflight/cli.py` has two subcommands: `replay LOG --id N` and `serve --mcp --rules RULES`. `serve` also takes `--feedback` and `--audit`.
   - Each subcommand imports its module only when it runs. Thus `preflight --help` works without the extras.
   - `preflight/adapters/mcp_server.py` is a placeholder now. `serve --mcp` stops with "not built yet" and exit code 1.
@@ -504,7 +509,7 @@ result.findings     # each Finding has a Violation: criterion, t, value, limit, 
   - Backspace in the viewer goes to the default pose of the model. To see the decision again, run the command again.
 - **Not in v0.1 yet.**
   - There is no rollout seed, because v0.1 runs one rollout with no random changes.
-  - There is no MP4 of blocked moves and no MCP server. The command, the extras and `load()` are ready for them.
+  - There is no MCP server. The command and the extra `mcp` are ready for it.
   - `fw.wrap()` takes no robot argument, because the firewall already holds its arm.
 
 ## Evaluation

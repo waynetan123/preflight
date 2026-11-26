@@ -46,11 +46,17 @@ class AuditLog:
             with self.path.open() as f:
                 self._next_id += sum(1 for _ in f)
 
+    @property
+    def next_id(self) -> int:
+        """The id of the next record."""
+        return self._next_id
+
     def record(self, decision: Decision, model: mujoco.MjModel, data: mujoco.MjData, arm: TabletopArm,
-               mode: str, executes: bool, scene: str | Path | None = None) -> int:
+               mode: str, executes: bool, scene: str | Path | None = None, video: str | Path | None = None) -> int:
         """Append one record. `data` must hold the state that the decision started from. Returns its id.
 
         `scene` is the scene file of `model`. Without it, `load()` cannot rebuild the model from the record.
+        `video` is the MP4 of the checked motion, if the firewall wrote one.
         """
         state = snapshot(model, data, arm)
         trajectory = None if decision.checked is None else _trajectory(decision.checked)
@@ -72,6 +78,7 @@ class AuditLog:
             "timing_ms": decision.timing_ms,
             "state_sha256": digest(state),
             "trajectory_sha256": None if trajectory is None else digest(trajectory),
+            "video": None if video is None else str(Path(video).resolve()),
             "state": state,
             "trajectory": trajectory,
         }
