@@ -37,6 +37,17 @@ The firewall can write each decision to an audit log (`AuditLog` in `preflight/a
 
 The command prints the verdict and the findings. Then it plays the checked trajectory. For a blocked call, this is the motion that did not run.
 
+## MCP server
+
+`preflight serve --mcp` gives an MCP client, such as Claude Code or Claude Desktop, the tools of the guarded robot. The firewall checks each call before the robot moves.
+
+```sh
+.venv/bin/python -m pip install -e '.[mcp]'
+claude mcp add preflight -- "$PWD/.venv/bin/preflight" serve --mcp --rules "$PWD/scenes/kitchen_rules.yaml"
+```
+
+[examples/mcp_demo.md](examples/mcp_demo.md) shows the options, the Claude Desktop setup and an example session.
+
 ## License
 
 Apache-2.0

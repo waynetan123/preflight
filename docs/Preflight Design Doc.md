@@ -469,7 +469,7 @@ result.findings     # each Finding has a Violation: criterion, t, value, limit, 
 
 **LLM tool use.** `guarded.tool_schemas(format="anthropic" | "openai")` returns tool definitions. `guarded.handle_tool_call(name, args)` returns the text to send back as the tool result. The agent loop stays yours.
 
-**MCP server.** `preflight serve --mcp --rules rules.yaml` exposes the guarded robot as MCP tools, so any MCP client (Claude Code, Claude Desktop, others) can drive the simulated robot through the firewall without code changes.
+**MCP server.** `preflight serve --mcp --rules rules.yaml` exposes the guarded robot as MCP tools, so any MCP client (Claude Code, Claude Desktop, others) can drive the simulated robot through the firewall without code changes. `examples/mcp_demo.md` shows the setup.
 
 **Later.** A ROS 2 node that guards action servers, and an adapter for VLA action chunks.
 
@@ -501,15 +501,17 @@ result.findings     # each Finding has a Violation: criterion, t, value, limit, 
   - `render_record()` makes the same video from a record of the log.
 - **Command.** `preflight` in `preflight/cli.py` has two subcommands: `replay LOG --id N` and `serve --mcp --rules RULES`. `serve` also takes `--feedback` and `--audit`.
   - Each subcommand imports its module only when it runs. Thus `preflight --help` works without the extras.
-  - `preflight/adapters/mcp_server.py` is a placeholder now. `serve --mcp` stops with "not built yet" and exit code 1.
   - The extra `mcp` installs the MCP Python SDK. The extra `video` installs imageio and its own ffmpeg, for the MP4 of blocked moves.
 - **Replay.** `preflight replay LOG --id N` (`preflight/audit/replay.py`) prints the decision and its findings. Then it opens the MuJoCo viewer at the starting state of the record.
   - The viewer plays the checked trajectory in real time. On BLOCK, this is the blocked motion. Then the arm holds its last targets until the window closes.
   - A control callback sets the targets at each physics step, so plain `python` works on macOS. In the viewer, a weld switches one step (2 ms) later than in Simulate. The function `Playback.step()` has no delay. A test shows that it gives the same state as Simulate.
   - Backspace in the viewer goes to the default pose of the model. To see the decision again, run the command again.
+- **MCP server.** `build_server()` in `preflight/adapters/mcp_server.py` serves the tools of `Guarded.tool_schemas()` over stdio. It uses the low-level `Server` of the MCP Python SDK 2.x. Each call goes to `Guarded.handle_tool_call()`.
+  - A BLOCK or bad arguments give a normal tool result with `isError` set. The text tells the LLM why, and the flag tells the client that nothing ran. The flag adds no information to the text, so it is also safe with `minimal` feedback.
+  - The physics runs in a worker thread, so the protocol stays responsive. A lock lets only one call at a time use the live robot. If the client cancels a call, the call still finishes.
+  - The server instructions tell the LLM that a safety check can block its calls, as "Risks and open questions" decides.
 - **Not in v0.1 yet.**
   - There is no rollout seed, because v0.1 runs one rollout with no random changes.
-  - There is no MCP server. The command and the extra `mcp` are ready for it.
   - `fw.wrap()` takes no robot argument, because the firewall already holds its arm.
 
 ## Evaluation

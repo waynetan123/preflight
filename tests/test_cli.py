@@ -1,4 +1,4 @@
-"""The `preflight` command. `serve --mcp` is a placeholder until its module is built."""
+"""The `preflight` command."""
 
 from pathlib import Path
 
@@ -46,7 +46,11 @@ def test_serve_refuses_an_unknown_feedback_mode():
     assert runner.invoke(app, ["serve", "--mcp", "--rules", str(RULES), "--feedback", "loud"]).exit_code == 2
 
 
-def test_serve_mcp_is_not_built_yet():
-    result = runner.invoke(app, ["serve", "--mcp", "--rules", str(RULES), "--feedback", "minimal"])
-    assert result.exit_code == 1
-    assert "preflight serve --mcp is not built yet" in result.output
+def test_serve_mcp_passes_its_options(monkeypatch, tmp_path):
+    # Replace the server, so that the test does not take over the stdin and stdout of pytest.
+    calls = []
+    monkeypatch.setattr("preflight.adapters.mcp_server.serve", lambda *args: calls.append(args))
+    audit = tmp_path / "audit.jsonl"
+    result = runner.invoke(app, ["serve", "--mcp", "--rules", str(RULES), "--feedback", "minimal", "--audit", str(audit)])
+    assert result.exit_code == 0, result.output
+    assert calls == [(RULES, "minimal", audit)]
