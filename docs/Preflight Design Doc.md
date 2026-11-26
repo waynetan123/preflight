@@ -488,14 +488,19 @@ result.findings     # each Finding has a Violation: criterion, t, value, limit, 
   - Positions are body origins in metres, because `place` puts the origin of the held object at its target.
   - The tags come from the trusted rules file, and the body names come from the trusted scene file. Nothing in the text comes from the user or from the LLM.
 - **Audit log.** `AuditLog` in `preflight/audit/log.py` adds one JSON line for each `check` and each `call`.
-  - A record has the time, the session, the mode, the tool call, the verdict, the findings, the unchecked criteria and the timing.
+  - A record has the time, the session, the scene file, the mode, the tool call, the verdict, the findings, the unchecked criteria and the timing.
   - It also has the starting state (qpos, qvel, ctrl, the active welds and their poses) and the checked trajectory, with a SHA-256 hash of each.
-  - A test loads a record into a new sim and runs it. The final state matches the live robot to 1e-9.
+  - The checked trajectory is `Decision.checked`: the last trajectory that the firewall simulated. On ALLOW and MODIFY, it is the trajectory that runs. On BLOCK, it is the blocked motion, which does not run. Thus a replay or a video can show the blocked motion. If the call does not compile, the record has no trajectory.
+  - `load(read_record(path, id))` gives a new model and data at the starting state of the record, and the checked trajectory. A test runs this trajectory. The final state matches the live robot to 1e-9.
   - A `pick` record is about 37 KB, because it holds the full trajectory.
 - **Record first.** The firewall writes the record before the robot moves. If the write fails, the call raises an error and the robot does not move.
+- **Command.** `preflight` in `preflight/cli.py` has two subcommands: `replay LOG --id N` and `serve --mcp --rules RULES`. `serve` also takes `--feedback` and `--audit`.
+  - Each subcommand imports its module only when it runs. Thus `preflight --help` works without the extras.
+  - `preflight/audit/replay.py` and `preflight/adapters/mcp_server.py` are placeholders now. Each subcommand stops with "not built yet" and exit code 1.
+  - The extra `mcp` installs the MCP Python SDK. The extra `video` installs imageio and its own ffmpeg, for the MP4 of blocked moves.
 - **Not in v0.1 yet.**
   - There is no rollout seed, because v0.1 runs one rollout with no random changes.
-  - There is no MP4 of blocked moves. The record holds the data for `preflight replay`, which is not built yet.
+  - There is no MP4 of blocked moves, no `preflight replay` and no MCP server. The command, the extras and `load()` are ready for them.
   - `fw.wrap()` takes no robot argument, because the firewall already holds its arm.
 
 ## Evaluation

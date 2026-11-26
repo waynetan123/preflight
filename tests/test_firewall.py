@@ -56,13 +56,15 @@ def test_allow(holding):
     assert d.verdict is Verdict.ALLOW
     assert d.findings == () and d.message() == "done"
     assert d.trajectory is not None
+    assert d.checked is d.trajectory
 
 
 def test_block_unsafe_move(holding):
     d = holding.check("move_to", {"xyz": _over_hand(holding, 0.10), "speed": 1.0})
     assert d.verdict is Verdict.BLOCK
     assert d.message().startswith("blocked: hot_clearance at t = ")
-    assert d.trajectory is None
+    assert d.trajectory is None  # nothing can run
+    assert d.checked is not None and d.checked.requested_speed == 1.0  # the blocked motion, for the log
 
 
 def test_modify_slows_the_motion_and_checks_it_again(holding):
@@ -73,6 +75,7 @@ def test_modify_slows_the_motion_and_checks_it_again(holding):
     assert d.trajectory.speed < 0.25
     assert d.trajectory.requested_speed == 1.0
     assert d.message().startswith("done, with a change: slowed ")
+    assert d.checked is d.trajectory  # the slowed motion was the last one simulated
 
 
 def test_block_a_move_that_pushes_into_the_table(fw):
@@ -167,6 +170,7 @@ def test_compile_error_blocks(fw):
     d = fw.check("move_to", {"xyz": [2.0, 0.0, 1.0]})
     assert d.verdict is Verdict.BLOCK and d.failure == "compile"
     assert "cannot reach [2.0, 0.0, 1.0]" in d.message()
+    assert d.checked is None  # nothing was simulated
 
 
 def test_motion_over_the_time_limit_blocks(fw):
@@ -180,6 +184,7 @@ def test_rollout_failure_blocks(fw, monkeypatch):
     d = fw.check("move_to", {"xyz": AWAY, "speed": 0.2})
     assert d.verdict is Verdict.BLOCK and d.failure == "penetration"
     assert "could not be trusted" in d.reason
+    assert d.trajectory is None and d.checked is not None
 
 
 def test_minimal_feedback_hides_the_rule(holding):

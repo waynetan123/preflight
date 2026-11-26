@@ -3,13 +3,12 @@
 import json
 from pathlib import Path
 
-import mujoco
 import numpy as np
 import pytest
 
-from preflight.audit import AuditLog, digest
+from preflight.audit import AuditLog, digest, load, read_record
 from preflight.core.firewall import Firewall
-from preflight.robots import Trajectory, WeldEvent
+from preflight.robots import TabletopArm
 
 ROOT = Path(__file__).resolve().parent.parent
 RULES = ROOT / "scenes" / "kitchen_rules.yaml"
@@ -52,7 +51,8 @@ def test_a_record_has_the_call_the_verdict_and_the_findings(fw, log):
     d = fw.check("move_to", {"xyz": _over_hand(fw, 0.10), "speed": 1.0})
     r = _records(log)[-1]
     assert r["args"] == {"xyz": _over_hand(fw, 0.10), "speed": 1.0}
-    assert r["reason"] == d.reason and r["failure"] is None and r["trajectory"] is None
+    assert r["reason"] == d.reason and r["failure"] is None
+    assert r["trajectory"]["requested_speed"] == 1.0 and r["executes"] is False  # the blocked motion, not run
     first = r["findings"][0]
     assert first["criterion"] == "hot_clearance" and first["action"] == "block"
     assert set(first) == {"criterion", "t", "value", "limit", "bodies", "message", "action"}
@@ -79,24 +79,52 @@ def test_hashes_repeat_for_the_same_state_and_call(fw, log):
 def test_a_record_runs_again_to_the_same_state(fw, log):
     """Load the state and the trajectory from the record into a new sim: the result is the live result."""
     fw.call("pick", {"object": "hot_cup"})
-    fw.call("move_to", {"xyz": [0.30, -0.10, 1.00], "speed": 0.2})
-    r = _records(log)[1]
-    assert r["state"]["welds"].keys() == {"grasp_hot_cup"}
+    decision = fw.call("move_to", {"xyz": [0.30, -0.10, 1.00], "speed": 0.2})
+    record = read_record(log.path, 2)
+    assert record["scene"] == str(ROOT / "scenes" / "kitchen.xml")
+    assert record["state"]["welds"].keys() == {"grasp_hot_cup"}
 
-    model = mujoco.MjModel.from_xml_path(str(ROOT / "scenes" / "kitchen.xml"))
-    data = mujoco.MjData(model)
-    for name, relpose in r["state"]["welds"].items():
-        model.eq_data[model.equality(name).id, 3:10] = relpose
-    data.qpos[:], data.qvel[:], data.ctrl[:] = r["state"]["qpos"], r["state"]["qvel"], r["state"]["ctrl"]
-    data.eq_active[:] = r["state"]["eq_active"]
-    mujoco.mj_forward(model, data)
-    t = r["trajectory"]
-    traj = Trajectory(t["tool"], t["args"], np.array(t["t"]), np.array(t["q"]), t["gripper"],
-                      tuple(WeldEvent(e["t"], e["weld"], e["active"], e["relpose"] and tuple(e["relpose"]))
-                            for e in t["events"]))
-    from preflight.robots import TabletopArm
+    model, data, traj = load(record)
+    assert model is not fw.backend.model
+    np.testing.assert_array_equal(traj.q, decision.trajectory.q)
+    assert traj.events == decision.trajectory.events
     TabletopArm(model).play(data, traj)
     np.testing.assert_allclose(data.qpos, fw.backend.live.qpos, atol=1e-9)
+
+
+def test_a_blocked_record_holds_the_blocked_motion(fw, log):
+    """A replay of a BLOCK gives the motion that the firewall simulated, from the same state."""
+    fw.call("pick", {"object": "hot_cup"})
+    decision = fw.check("move_to", {"xyz": _over_hand(fw, 0.10), "speed": 1.0})
+    assert decision.verdict == "block" and decision.trajectory is None
+    record = read_record(log.path, 2)
+    assert record["trajectory_sha256"] == digest(record["trajectory"])
+
+    model, data, traj = load(record)
+    np.testing.assert_array_equal(traj.q, decision.checked.q)
+    TabletopArm(model).play(data, traj, settle_s=fw.rules.settle_s)
+    rollout = fw.backend.rollout(fw.arm, decision.checked, settle_s=fw.rules.settle_s)
+    np.testing.assert_allclose(data.qpos, rollout.trace.qpos[-1], atol=1e-9)
+
+
+def test_a_record_without_a_trajectory_loads_its_state(fw, log):
+    fw.call("pick", {"object": "no_such_object"})
+    model, data, traj = load(read_record(log.path, 1))
+    assert traj is None
+    np.testing.assert_array_equal(data.qpos, fw.backend.live.qpos)
+
+
+def test_an_unknown_record_id_raises(fw, log):
+    fw.call("pick", {"object": "hot_cup"})
+    with pytest.raises(KeyError, match="no record with id 7"):
+        read_record(log.path, 7)
+
+
+def test_a_record_without_a_scene_cannot_load(fw, log):
+    fw.call("pick", {"object": "hot_cup"})
+    record = {**read_record(log.path, 1), "scene": None}
+    with pytest.raises(ValueError, match="no scene file"):
+        load(record)
 
 
 def test_ids_go_on_in_an_existing_file(tmp_path):

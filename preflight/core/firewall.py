@@ -83,17 +83,25 @@ class Firewall:
     def _log(self, decision: Decision, mode: str, executes: bool) -> None:
         # The live state is still the state that the decision started from: nothing has run yet.
         if self.audit is not None:
-            self.audit.record(decision, self.backend.model, self.backend.live, self.arm, mode, executes)
+            self.audit.record(decision, self.backend.model, self.backend.live, self.arm, mode, executes,
+                              scene=self.rules.scene)
 
     def _decide(self, tool: str, args: Mapping[str, Any]) -> Decision:
         start = time.perf_counter()
         timing: dict[str, float] = {}
 
+        simulated: list[Trajectory] = []  # each trajectory that went into a simulation, in sequence
+
+        def simulate(trajectory: Trajectory):
+            simulated.append(trajectory)
+            return self._simulate(tool, trajectory, timing)
+
         def decision(verdict: Verdict, reason: str, trajectory: Trajectory | None = None,
                      findings: tuple[Finding, ...] = (), **extra) -> Decision:
             timing["total"] = (time.perf_counter() - start) * 1000
             return Decision(tool, MappingProxyType(dict(args)), verdict, trajectory, findings, reason,
-                            timing_ms=MappingProxyType(timing), **extra)
+                            checked=simulated[-1] if simulated else None, timing_ms=MappingProxyType(timing),
+                            **extra)
 
         try:
             trajectory = self.arm.compile(self.backend.live, tool, args)
@@ -102,7 +110,7 @@ class Firewall:
             return decision(Verdict.BLOCK, str(exc), failure="compile")
         timing["compile"] = (time.perf_counter() - start) * 1000
 
-        result, failure = self._simulate(tool, trajectory, timing)
+        result, failure = simulate(trajectory)
         if failure is not None:
             return decision(Verdict.BLOCK, failure[1], failure=failure[0])
         findings, unchecked = result.findings, result.unchecked
@@ -122,7 +130,7 @@ class Firewall:
             slow = trajectory.retime(factor)
             if slow.duration > MAX_MOTION_S:
                 break
-            again, failure = self._simulate(tool, slow, timing)
+            again, failure = simulate(slow)
             if failure is not None:
                 return decision(Verdict.BLOCK, f"the slowed motion failed in simulation: {failure[1]}",
                                 findings=findings, failure=failure[0], unchecked=unchecked)
